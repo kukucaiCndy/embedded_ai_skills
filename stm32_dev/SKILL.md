@@ -8,622 +8,637 @@ description: "STM32 embedded development guide - cross-platform (Windows/macOS/L
 > 跨平台支持：**Windows** / **macOS** / **Linux**。
 > 两条路径任选：**路径 A**（CubeIDE 已安装）或 **路径 B**（纯 CLI，全部开源）。
 
-## SKILL 加载后的执行流程
+---
 
-### ⚠️ 重要声明：经验 ≠ 标准 SOP
+## 一、执行流程总览
 
-> 本 SKILL 中所有烧录命令、驱动选择、接线方式、BOOT0 操作等**均来自特定硬件的实测经验**。不同开发板的硬件配置各不相同（有无 NRST、晶振类型、LED 引脚极性等），**AI 必须在执行任何操作前先向用户确认硬件情况，不能盲目照搬 SKILL 中的任何步骤。**
-
-### 第零步：检测平台与 Shell
-
-> 🔥 **推荐所有平台使用 MSYS2 作为统一 Shell。** Windows 上通过 MSYS2 安装工具链并获得 bash 环境；macOS 和 Linux 本身就有 bash，但同样推荐沿用本文档的 MSYS2+pacman 流程以保证一致性（Linux 上 pacman 可用系统自带的，macOS 上用 Homebrew 替代）。Zadig 驱动修复仅 Windows 需要。
-
-```bash
-# 检测操作系统
-uname -s    # Linux / Darwin (macOS) / MINGW64_NT (Windows MSYS2) / MSYS_NT
-
-# MSYS2 是首选 Shell（Windows 必装）
-# 如果不是 MSYS2 环境，引导用户安装：
-# Windows: 安装 MSYS2 (https://www.msys2.org/) → 启动 MSYS2 UCRT64 → 继续
-# macOS: 安装 Homebrew → brew install ... → 继续
-# Linux: 直接用系统包管理器 → 继续
+```
+环境检测 → 交互配置 → CMakeLists.txt → 编译验证 → 应用代码 → 烧录
 ```
 
-**工具链安装（按平台）：**
+---
 
-| 平台 | 推荐 Shell | 安装命令 |
+## 二、第零步：环境检测（全局一次）
+
+### 工具链安装
+
+```bash
+# 检测当前平台
+uname -s    # Linux / Darwin (macOS) / MINGW64_NT (Windows MSYS2)
+```
+
+| 平台 | 推荐 Shell | 安装命令（一次） |
 |------|-----------|---------|
-| **Windows** | **MSYS2 UCRT64**（必装） | `pacman -S --needed mingw-w64-x86_64-arm-none-eabi-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-stlink` |
-| **macOS** | Terminal + Homebrew | `brew install --cask gcc-arm-embedded && brew install cmake ninja stlink` |
-| **Linux** | 系统 Terminal | `sudo apt install -y gcc-arm-none-eabi cmake ninja-build stlink-tools` |
+| **Windows** | **MSYS2 UCRT64** | `pacman -S --needed mingw-w64-x86_64-arm-none-eabi-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-stlink mingw-w64-x86_64-openocd` |
+| **macOS** | Terminal + Homebrew | `brew install --cask gcc-arm-embedded && brew install cmake ninja stlink openocd` |
+| **Linux (apt)** | 系统 Terminal | `sudo apt install -y gcc-arm-none-eabi cmake ninja-build stlink-tools openocd` |
 
-### 第一步：安装工具链 + 确定路径
+### 路径判断
 
 ```bash
-# 检测 CubeIDE（Windows only，路径 A 的来源）
-CUBEIDE_OK=0
-ls -d /c/ST/STM32CubeIDE_*/STM32CubeIDE/STM32CubeIDE.exe /d/ST/STM32CubeIDE_*/STM32CubeIDE/STM32CubeIDE.exe 2>/dev/null && CUBEIDE_OK=1
+# 检测 CubeIDE（Windows only，路径 A）
+ls -d /c/ST/STM32CubeIDE_*/STM32CubeIDE/STM32CubeIDE.exe 2>/dev/null
 
-# 检测系统包管理器中已有的编译工具（跨平台通用）
-arm-none-eabi-gcc --version 2>/dev/null | head -1 && GCC_OK=1 || GCC_OK=0
-cmake --version 2>/dev/null | head -1 && CMAKE_OK=1 || CMAKE_OK=0
-ninja --version 2>/dev/null && NINJA_OK=1 || NINJA_OK=0
+# 检测系统工具链
+arm-none-eabi-gcc --version 2>/dev/null | head -1
+cmake --version 2>/dev/null | head -1
+ninja --version 2>/dev/null
 ```
-
-**路径 B 工具链安装（按平台，选一个）：**
-
-| 平台 | 安装命令（一次性） |
-|------|------------------|
-| **Windows (MSYS2)** | `pacman -S --needed mingw-w64-x86_64-arm-none-eabi-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-stlink` |
-| **macOS (Homebrew)** | `brew install --cask gcc-arm-embedded && brew install cmake ninja stlink` |
-| **Linux (apt)** | `sudo apt install -y gcc-arm-none-eabi cmake ninja-build stlink-tools` |
-| **Linux (dnf)** | `sudo dnf install -y arm-none-eabi-gcc-cs cmake ninja-build stlink` |
-| **Linux (arch)** | `sudo pacman -S --needed arm-none-eabi-gcc cmake ninja stlink` |
-
-> 💡 **非 Windows 用户无需 MSYS2。** Mac/Linux 通过系统包管理器安装工具链，其余流程（stm32-cmake、编译 CMakeLists、烧录）全部相同。
-
-**路径判断：**
 
 | 条件 | 路径 | 说明 |
 |------|------|------|
-| CubeIDE 已安装 (Windows only) | **路径 A** | 取其内置 arm-gcc + cmake + CubeProgrammer，无需额外装工具链 |
-| CubeIDE 未安装 + 工具链已就绪 | **路径 B** | 纯 CLI，全部开源 |
-| CubeIDE 未安装 + 工具链缺失 | **先装工具链 → 路径 B** | 按上表选一条命令即可 |
+| CubeIDE 已安装 | **路径 A** | 取其内置 arm-gcc + cmake + CubeProgrammer |
+| 无 CubeIDE + 工具链就绪 | **路径 B** | 纯 CLI，全部开源 |
+| 无 CubeIDE + 工具链缺失 | **先装工具链 → 路径 B** | 按上表选一条命令 |
 
-**路径 A 工具链定位（Windows CubeIDE）：**
+**路径 A 工具链定位（Windows）：**
 ```bash
 CUBEIDE_ROOT=$(ls -d /c/ST/*/STM32CubeIDE /d/ST/*/STM32CubeIDE 2>/dev/null | head -1)
 GCC_DIR=$(ls -d "$CUBEIDE_ROOT/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32."*".win32_"*/tools/bin 2>/dev/null | head -1)
 CMAKE_DIR=$(ls -d "$CUBEIDE_ROOT/plugins/com.st.stm32cube.ide.mcu.externaltools.cmake.win32_"*/tools/bin 2>/dev/null | head -1)
-NINJA_DIR=$(ls -d "$CUBEIDE_ROOT/plugins/com.st.stm32cube.ide.mcu.externaltools.ninja.win32_"*/tools/bin 2>/dev/null | head -1)
-export PATH="$GCC_DIR:$CMAKE_DIR:$NINJA_DIR:$PATH"
+export PATH="$GCC_DIR:$CMAKE_DIR:$PATH"
 ```
 
-**检查报告：**
-```
-平台: [Windows / macOS / Linux]
-路径: [A - CubeIDE] 或 [B - Pure CLI]
-[✅/❌] ARM GCC         : [版本号]
-[✅/❌] CMake           : [版本号]
-[✅/❌] Ninja           : [版本号]
-[✅/❌] Git             : [版本号]
-[✅/❌] 烧录工具        : CubeProgrammer / st-flash
-```
-
-### 第二步：首次初始化（全局一次）
+### stm32-cmake 初始化（全局一次）
 
 ```bash
-# 克隆 stm32-cmake 到固定目录（整个电脑只做一次）
 mkdir -p ~/stm32-tools
 git clone --depth=1 https://github.com/ObKo/stm32-cmake.git ~/stm32-tools/stm32-cmake
-
-# 可选：后续更新
-git -C ~/stm32-tools/stm32-cmake pull
 ```
-
-> 🔥 **stm32-cmake 只需安装一次。** 它是一套 `.cmake` 模块，不编译任何二进制。所有项目通过绝对路径引用它，无需在每个项目里重复 clone。
-> 
-> **目录约定：** `~/stm32-tools/stm32-cmake/`，对应 CMakeLists.txt 中 `set(CMAKE_TOOLCHAIN_FILE ~/stm32-tools/stm32-cmake/cmake/stm32_gcc.cmake)`。
-
-### 第三步：确认芯片型号
-
-> **AI 必须向用户确认芯片的具体型号（丝印），不能假设默认值。** 芯片型号决定 CMSIS 类型和 Flash/RAM 布局。
-
-```
-AI: 请确认你的 STM32 芯片型号（看芯片表面丝印），例如：
-    F103C8T6 / F103CBT6 / F103RET6 / F407VGT6 / ...
-```
-
-### 第四步：项目配置访谈（标准 SOP）
-
-> **AI 按以下顺序逐一询问。这是新项目的标准初始化流程。**
-
-**询问顺序（逐条进行，不要一次性抛出所有问题）：**
-
-```
-第1条：编程语言
-  AI: "使用 C 还是 C++ 开发？"
-  → CMakeLists.txt 中 project(... C ASM) 或 project(... CXX ASM C)
-
-第2条：目标时钟频率
-  AI: "期望的系统主频？"
-  选项示例：
-    - 72MHz（HSE 8MHz ×9，需外部晶振）
-    - 48MHz（HSI 8MHz/2 ×12，内部时钟，100% 可靠）
-    - 默认推荐：HSE 72MHz 优先，失败自动回退 HSI 48MHz
-
-第3条：是否启用 FreeRTOS
-  AI: "需要 FreeRTOS 吗？"
-  → 是：CMakeLists.txt 加 RTOS::FreeRTOS，生成 FreeRTOSConfig.h
-  → 否：裸机开发
-
-第4条：串口配置
-  AI: "需要串口吗？如果用，需要几个，Tx/Rx 引脚和波特率？"
-  示例回答："UART1, PA9/PA10, 115200"
-  → AI 自主判断是否追问（如多个串口才追问）
-
-第5条：开放性问题
-  AI: "请描述你想用这个项目做什么？"
-  用户自由回答，例如：
-    - "用 TIM3 CH1 输出 50Hz PWM 控制舵机"
-    - "读 ADC1 通道 0 的温度传感器并通过 UART 打印"
-    - "驱动 I2C OLED 显示屏"
-  → AI 根据回答自主决定继续追问哪些外设配置（SPI/I2C/TIM/ADC/DMA 等）
-  → AI 完成后总结计划，让用户确认
-
-第6条：确认硬件连接（访谈结束时必问）
-  AI: "硬件已经连接好且上电了吗？"
-  → 用户确认后，AI 才开始生成文件
-```
-
-> 💡 **以上 6 条是标准 SOP。** 硬件差异（LED 引脚、有无 NRST、BOOT 跳线等）不在项目初始化流程中体现——它们只在烧录/救砖阶段遇到问题时才按需处理。
->
-> 📝 **C vs C++ 约定：** 如果用户选择 C++，入口文件为 `code/src/main.cpp`，CMakeLists.txt 中 `project(... CXX ASM C)`。
-
-### 第五步：配置 CMakeLists.txt（先做工程配置，再写代码）
-
-> **AI 必须先完成 CMakeLists.txt 配置，再开始写应用代码。** 工程配置决定编译目标、外设依赖和 include 路径，代码依赖这些配置。
-
-**标准流程：**
-
-```
-1. AI 参考 ~/stm32-tools/stm32-cmake/examples/ 下对应芯片家族的示例 CMakeLists.txt
-2. 根据访谈结果配置：
-   - stm32_fetch_cube(系列)  — 根据芯片型号
-   - find_package — CMSIS + HAL（+ RTOS::FreeRTOS 如需要）
-   - target_link_libraries — 按启用的外设逐个链接 HAL module
-   - include_directories(code/include)
-   - file(GLOB_RECURSE SOURCES code/src/*.c [code/src/*.cpp 如 C++])
-   - 入口文件名：C 用 code/src/main.c，C++ 用 code/src/main.cpp
-3. 复制并修改 hal_conf.h：打开对应模块 #define，添加 LSE/HSE_STARTUP_TIMEOUT 宏
-4. 立即编译验证 CMakeLists.txt 正确：
-   cmake -S . -B build -G Ninja && cmake --build build 2>&1
-   → 如果报错，根据常见编译错误表修复，直到 cmake 配置阶段通过
-5. CMakeLists.txt 配置通过后，再开始写 code/src/main.c(main.cpp)
-```
-
-**常见编译错误及修复方法（AI 必须自查）：**
-
-| 报错 | 原因 | 修复 |
-|------|------|------|
-| `UART_HandleTypeDef undeclared` / `TIM_HandleTypeDef undeclared` | hal_conf.h 中对应模块的 `#define HAL_xxx_MODULE_ENABLED` 被注释 | 去注释 `#define HAL_UART_MODULE_ENABLED` 等 |
-| `LSE_STARTUP_TIMEOUT undeclared` / `HSE_STARTUP_TIMEOUT undeclared` | hal_conf.h 中未定义振荡器超时宏 | 在 stm32f1xx_hal_conf.h 中添加：`#define HSE_STARTUP_TIMEOUT 100` / `#define LSE_STARTUP_TIMEOUT 5000` |
-| `undefined reference to HAL_xxx` | CMakeLists.txt 中未链接对应 HAL module | `target_link_libraries(... HAL::STM32::F1::UART ...)` |
-| `multiple definition of SysTick_Handler` | 用户定义了 SysTick_Handler 但 HAL 内部也有 | 如果用了 FreeRTOS，删掉用户写的 SysTick_Handler，由 RTOS 接管；否则保留 |
-| `cannot find -lSTM32::NoSys` | 未链接 `STM32::NoSys` | `target_link_libraries` 中加 `STM32::NoSys` |
-| `fatal error: stm32f1xx_hal.h: No such file` | include 路径不对 | CMakeLists.txt 中 `include_directories(code/include)` |
-
-### 第六步：编译 + 烧录
-
-> **AI 在生成应用代码后，立即编译 + 烧录验证。**
-
-**标准流程：**
-
-```
-1. 编译：
-   cmake -S . -B build -G Ninja && cmake --build build 2>&1
-   → 根据编译错误逐一修复 → 重新编译 → 直到成功
-
-2. 烧录（路径 B）：
-   arm-none-eabi-objcopy -O binary build/my-project.elf build/my-project.bin
-   st-flash write build/my-project.bin 0x08000000
-   
-   或（路径 A）：
-   CubeProgrammer_CLI -c port=SWD -w build/my-project.elf -v -rst -run
-
-3. 输出编译报告：文件数量、体积、编译状态、烧录状态
-```
-
-> 🔥 **AI 的职责：CMakeLists 配置 → 编译 → 报错 → 修复 → 重新编译 → 烧录 → 直到成功。不能把编译失败或未烧录的项目交给用户。**
 
 ---
 
-## 两条路径总览
+## 三、第一步：交互式项目配置
 
-> **两种路径共享相同的项目结构和 CMakeLists.txt，切换路径无需改代码。跨 Windows/macOS/Linux 通用。**
-> 
-> 🔥 **两种路径都不需要 CubeMX。** 代码由 AI 根据模板生成，HAL/CMSIS 由 `stm32_fetch_cube()` 从 ST GitHub 自动下载。
+> **AI 逐条询问，应追问时追问。核心理念：理解用户需求后才能正确生成 CMakeLists.txt。**
 
-| | **路径 A：CubeIDE 已安装** | **路径 B：纯 CLI（开源工具链）** |
-|---|---|---|
-| 支持平台 | Windows only（CubeIDE 是 Windows 软件） | **Windows / macOS / Linux** |
-| 编译器来源 | CubeIDE 内置 GNU Tools for STM32 | 系统包管理器（见安装表） |
-| CMake/Ninja | CubeIDE plugins 目录 | 系统包管理器 |
-| HAL/CMSIS 源码 | `stm32_fetch_cube()` 从 ST GitHub 自动下载 | `stm32_fetch_cube()` 从 ST GitHub 自动下载 |
-| 代码生成 | AI 根据模板生成（无需 CubeMX） | AI 根据模板生成（无需 CubeMX） |
-| 烧录工具 | **CubeProgrammer CLI**（驱动自带） | **st-flash**（Win 需 Zadig one-time；Mac/Linux 免驱） |
-| 依赖 ST 闭源软件？ | 是（CubeIDE 本体） | **否，全部开源** |
+### 1. 芯片型号
+
+```
+AI: "请确认你的 STM32 芯片型号（看芯片表面丝印）？"
+示例回答: "STM32L431VCTx" / "STM32F103C8T6"
+```
+
+### 2. 开发模式（核心决策）
+
+> **AI 必须明确确认开发模式。这决定了 CMakeLists.txt 的 `project()` 写法、入口文件后缀、C++ 链接约定、hal_conf.h 是否需要等。**
+
+```
+AI: "你希望用哪种方式开发？"
+
+┌──────────────────────────────────────────────────────────────┐
+│ [1] HAL 库 + C        ← 推荐新手/快速开发                  │
+│     入口 main.c  │  project(C C ASM)  │  需 hal_conf.h      │
+│                                                             │
+│ [2] HAL 库 + C++      ← 面向对象封装 HAL                    │
+│     入口 main.cpp │  project(C CXX ASM)│  需 hal_conf.h     │
+│     ⚠️ HAL 回调必须 extern "C"  │ C++ 选项仅对 cpp 生效     │
+│                                                             │
+│ [3] CMSIS 寄存器 + C  ← 极致精简、学习底层                  │
+│     入口 main.c  │  project(C ASM)    │  无需 hal_conf.h    │
+│     直接操作寄存器，无 HAL 依赖                             │
+│                                                             │
+│ [4] CMSIS 寄存器 + C++ ← C++ 风格底层编程                   │
+│     入口 main.cpp │  project(C CXX ASM)│  无需 hal_conf.h   │
+│     ISR 必须 extern "C"  │  C++ 选项仅对 cpp 生效           │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**四种模式的 CMakeLists.txt 关键差异：**
+
+| 配置项 | HAL + C | HAL + C++ | CMSIS + C | CMSIS + C++ |
+|--------|---------|-----------|-----------|-------------|
+| `project(...)` | `C C ASM` | `C CXX ASM` | `C ASM` | `C CXX ASM` |
+| `find_package(HAL)` | ✅ 必需 | ✅ 必需 | ❌ 不需要 | ❌ 不需要 |
+| `hal_conf.h` | ✅ 必需 | ✅ 必需 | ❌ 不需要 | ❌ 不需要 |
+| 入口文件 | `main.c` | `main.cpp` | `main.c` | `main.cpp` |
+| `extern "C"` ISR | 不需要 | ✅ 所有 ISR + HAL 回调 | 不需要 | ✅ 所有 ISR |
+| `file(GLOB SOURCES)` | `*.c` | `*.cpp` | `*.c` | `*.cpp` |
+| C++ 编译选项 | ❌ | ✅ `-std=c++17` 等 | ❌ | ✅ `-std=c++17` 等 |
+| HAL 外设链接 | ✅ 按需 | ✅ 按需 | ❌ | ❌ |
+
+### 3. 时钟配置
+
+> **AI 需要理解时钟树而非死记参数。掌握以下公式即可正确配置任意 STM32 系列。**
+
+```
+AI: "期望的系统主频是多少？使用什么时钟源？"
+```
+
+#### 时钟配置速查（按系列）
+
+| 系列 | 可用内部时钟 | PLL 输入范围 | VCO 范围 | 最高主频 |
+|------|------------|-------------|---------|---------|
+| STM32F1 | HSI 8MHz | 4-16MHz (HSE/HSI) | — | 72MHz |
+| STM32F4 | HSI 16MHz | 1-2MHz (HSE/HSI) | 100-432MHz | 168MHz |
+| STM32L4 | MSI 100k-48M / HSI 16MHz | 4-16MHz | 64-344MHz | 80MHz |
+| STM32G0 | HSI 16MHz | 2.66-8MHz | 96-344MHz | 64MHz |
+| STM32H7 | HSI 64MHz | 1-16MHz (HSE/HSI) | 150-836MHz | 550MHz |
+
+#### PLL 计算公式（通用）
+
+```
+PLL_IN  = PLL_SRC / PLLM          → 必须落在 PLL 输入范围内
+PLL_VCO = PLL_IN * PLLN           → 必须落在 VCO 范围内
+PLL_P   = PLL_VCO / PLLP          → SAI / 辅助时钟
+PLL_Q   = PLL_VCO / PLLQ          → USB / 48MHz 外设
+PLL_R   = PLL_VCO / PLLR          → SYSCLK（系统主频）
+```
+
+#### 常用时钟方案
+
+| 方案 | 芯片 | PLL 链 | 结果 | FLASH_LATENCY |
+|------|------|--------|------|---------------|
+| MSI 内部 | STM32L4 | MSI 4M /1 ×40 /2 | **80MHz** | 4 |
+| HSI 内部 | STM32F1 | HSI 8M /2 ×12 | **48MHz** | 1 |
+| HSE 外部 | STM32F1 | HSE 8M ×9 | **72MHz** | 2 |
+| HSE 外部 | STM32L4 | HSE 8M /1 ×20 /2 | **80MHz** | 4 |
+| HSI 内部 | STM32F4 | HSI 16M /8 ×168 /2 | **168MHz** | 5 |
+| HSI 内部 | STM32G0 | HSI 16M /1 ×8 /2 | **64MHz** | 2 |
+
+#### STM32L4 电压缩放（特殊）
+
+```cpp
+// L4 系列 80MHz 必须先设置电压等级！否则 PLL 不稳定
+HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1);
+// SCALE1 支持 ≤ 80MHz  │  SCALE2 支持 ≤ 26MHz
+// ℹ️ 参考手册说明，不同电压等级对应不同频率上限
+```
+
+### 4. 中间件选择
+
+```
+AI: "需要 RTOS 吗？"
+```
+
+| 中间件 | 引入方式 |
+|--------|---------|
+| **FreeRTOS** | `find_package(CMSIS COMPONENTS {chip} RTOS::FreeRTOS REQUIRED)` |
+| **FatFS** | 通过 CMSIS + HAL SD/SPI 手动集成 |
+| **lwIP** | 通过 HAL ETH + 手动集成 |
+| **USB Stack** | 通过 HAL PCD + 手动集成 |
+
+> 使用 FreeRTOS 时，HAL 时基不能再使用 SysTick（FreeRTOS 占用）。需使用硬件定时器（如 TIM6）替代，参见"故障排错"表第 10 条。
+
+### 5. 外设配置
+
+```
+AI: "需要哪些外设？"
+示例回答: "UART1, PA9/PA10, 115200波特率"
+可一次列出多个，如: "UART1 + SPI1 + TIM3 CH1 PWM"
+```
+
+> **AI 根据回答自主判断是否追问具体引脚、波特率等参数。**
+
+### 6. 确认 + 预览
+
+```
+AI 完成交互后，输出配置汇总并让用户确认：
+
+  ── 项目配置汇总 ──
+  芯片    : STM32L431VCTx
+  模式    : HAL + C++
+  时钟    : MSI 4MHz → PLL 80MHz
+  中间件  : 无
+  外设    : UART1 (PA9/PA10, 115200) + GPIO (PB0, 推挽输出)
+  
+  确认以上配置？我将开始生成 CMakeLists.txt 和 hal_conf.h。
+```
 
 ---
 
-## 创建新项目（两条路径通用）
+## 四、第二步：工程配置（CMakeLists.txt）
 
-### 项目目录结构（标准 SOP）
+> **AI 先配置 CMakeLists.txt 并编译验证通过，再写应用代码。** 工程配置决定编译目标和依赖，代码依赖这些配置。
+
+### 目录结构
 
 ```
 my_project/
-├── CMakeLists.txt              ← CMake 项目文件
+├── CMakeLists.txt
 ├── code/
-│   ├── include/                ← 头文件（hal_conf.h, 自定义 .h）
-│   │   └── stm32f1xx_hal_conf.h    [仅 HAL 模式]
-│   └── src/                    ← 源码（main.c, 模块 .c）
-│       └── main.c
-└── build/                      ← cmake -B build 自动生成
+│   ├── include/
+│   │   └── stm32l4xx_hal_conf.h    ← HAL 模式必需
+│   └── src/
+│       └── main.c / main.cpp       ← 按开发模式
+└── build/                           ← cmake -B build 自动生成
 ```
 
-> **这是标准目录结构。** AI 创建项目时自动生成 `code/include/` 和 `code/src/` 目录。`stm32-cmake/` 全局安装在 `~/stm32-tools/stm32-cmake/`，不需要放在项目里。
+### 四种模式的 CMakeLists.txt 模板
 
-### 两种开发模式
+#### 模式 1：HAL + C
 
-| 对比维度 | **CMSIS 寄存器模式** | **HAL 库模式** |
-|----------|---------------------|----------------|
-| 依赖 | CMSIS 头文件（自动下载） | CMSIS + HAL 驱动（自动下载） |
-| 代码风格 | 直接操作寄存器 | HAL API 调用 |
-| hal_conf.h | 不需要 | 必须提供 |
-| CMake find_package | `CMSIS COMPONENTS STM32F103C8` | 加 `HAL COMPONENTS STM32F1` |
-| 链接方式 | 仅 CMSIS | 按外设逐个链接 HAL module |
-| 适用场景 | 极致精简、学习底层 | 快速开发、复杂外设 |
+```cmake
+cmake_minimum_required(VERSION 3.22)
+set(CMAKE_TOOLCHAIN_FILE "$ENV{HOME}/stm32-tools/stm32-cmake/cmake/stm32_gcc.cmake")
 
----
+project(my-project C C ASM)
 
-### 模式 A：CMSIS 寄存器模式
+stm32_fetch_cube(STM32L4)
 
-> 无 `hal_conf.h`、无 HAL 依赖。AI 参考 `~/stm32-tools/stm32-cmake/examples/blinky/` 的 CMakeLists.txt 创建项目结构，源码用裸机寄存器风格。
+find_package(CMSIS COMPONENTS STM32L431VC REQUIRED)
+find_package(HAL COMPONENTS STM32L4 REQUIRED)
 
-**code/src/main.c 模板：**
+file(GLOB_RECURSE PROJECT_SOURCES code/src/*.c)
+
+add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
+
+target_include_directories(${PROJECT_NAME}.elf PRIVATE code/include)
+
+target_link_libraries(${PROJECT_NAME}.elf PRIVATE
+    CMSIS::STM32::L431VC
+    HAL::STM32::L4
+    STM32::NoSys
+    HAL::STM32::L4::RCC
+    HAL::STM32::L4::CORTEX
+    HAL::STM32::L4::GPIO
+    HAL::STM32::L4::FLASH
+    HAL::STM32::L4::PWR
+    HAL::STM32::L4::DMA
+    HAL::STM32::L4::UART
+    HAL::STM32::L4::RCCEx
+    HAL::STM32::L4::PWREx
+)
+```
+
+#### 模式 2：HAL + C++
+
+```cmake
+cmake_minimum_required(VERSION 3.22)
+set(CMAKE_TOOLCHAIN_FILE "$ENV{HOME}/stm32-tools/stm32-cmake/cmake/stm32_gcc.cmake")
+
+# ⚠️ 必须包含 C CXX 两者！
+project(my-project C CXX ASM)
+
+stm32_fetch_cube(STM32L4)
+
+find_package(CMSIS COMPONENTS STM32L431VC REQUIRED)
+find_package(HAL COMPONENTS STM32L4 REQUIRED)
+
+file(GLOB_RECURSE PROJECT_SOURCES code/src/*.cpp)
+
+add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
+
+target_include_directories(${PROJECT_NAME}.elf PRIVATE code/include)
+
+target_link_libraries(${PROJECT_NAME}.elf PRIVATE
+    CMSIS::STM32::L431VC
+    HAL::STM32::L4
+    STM32::NoSys
+    HAL::STM32::L4::RCC
+    HAL::STM32::L4::CORTEX
+    HAL::STM32::L4::GPIO
+    HAL::STM32::L4::FLASH
+    HAL::STM32::L4::PWR
+    HAL::STM32::L4::DMA
+    HAL::STM32::L4::UART
+    HAL::STM32::L4::RCCEx
+    HAL::STM32::L4::PWREx
+)
+
+# ⚠️ C++ 选项仅对 .cpp 生效
+target_compile_options(${PROJECT_NAME}.elf PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:-std=c++17>
+    $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
+    $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>
+    $<$<COMPILE_LANGUAGE:CXX>:-fno-threadsafe-statics>
+)
+```
+
+| C++ 编译选项 | 说明 |
+|-------------|------|
+| `-std=c++17` | C++ 标准 |
+| `-fno-rtti` | 禁用 RTTI，嵌入式必须 |
+| `-fno-exceptions` | 禁用异常，嵌入式必须 |
+| `-fno-threadsafe-statics` | 裸机不需要线程安全静态初始化 |
+
+#### 模式 3：CMSIS 寄存器 + C
+
+```cmake
+cmake_minimum_required(VERSION 3.22)
+set(CMAKE_TOOLCHAIN_FILE "$ENV{HOME}/stm32-tools/stm32-cmake/cmake/stm32_gcc.cmake")
+
+project(my-project C ASM)
+
+stm32_fetch_cube(STM32F1)
+
+find_package(CMSIS COMPONENTS STM32F103C8 REQUIRED)
+
+file(GLOB_RECURSE PROJECT_SOURCES code/src/*.c)
+
+add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
+
+target_link_libraries(${PROJECT_NAME}.elf PRIVATE
+    CMSIS::STM32::F103C8
+    STM32::NoSys
+)
+```
+
+#### 模式 4：CMSIS 寄存器 + C++
+
+```cmake
+cmake_minimum_required(VERSION 3.22)
+set(CMAKE_TOOLCHAIN_FILE "$ENV{HOME}/stm32-tools/stm32-cmake/cmake/stm32_gcc.cmake")
+
+project(my-project C CXX ASM)
+
+stm32_fetch_cube(STM32F1)
+
+find_package(CMSIS COMPONENTS STM32F103C8 REQUIRED)
+
+file(GLOB_RECURSE PROJECT_SOURCES code/src/*.cpp)
+
+add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
+
+target_link_libraries(${PROJECT_NAME}.elf PRIVATE
+    CMSIS::STM32::F103C8
+    STM32::NoSys
+)
+
+target_compile_options(${PROJECT_NAME}.elf PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:-std=c++17>
+    $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
+    $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>
+)
+```
+
+### hal_conf.h（HAL 模式必需）
+
+从 `~/stm32-tools/stm32-cmake/examples/` 下对应家族的模板复制，然后根据启用的外设**去掉对应 `#define` 注释**。
+
 ```c
-#include "stm32f1xx.h"
+// 示例：启用 UART 和 DMA
+#define HAL_UART_MODULE_ENABLED
+#define HAL_DMA_MODULE_ENABLED     // ⚠️ UART 驱动内部引用了 DMA 类型定义
 
-int main(void) {
-    while (1) {
-        // 用户的功能代码
-    }
-}
+// STM32L4 必须定义完整振荡器值
+#define HSE_VALUE    8000000U
+#define HSI_VALUE    16000000U
+#define MSI_VALUE    4000000U
+#define HSI48_VALUE  48000000U
+#define LSI_VALUE    32000U
+#define LSE_VALUE    32768U
+#define EXTERNAL_SAI1_CLOCK_VALUE    2097000U
+#define EXTERNAL_SAI2_CLOCK_VALUE    48000U
 ```
 
 ---
 
-### 模式 B：HAL 库模式
+## 五、第三步：编译
 
-> AI 参考 `~/stm32-tools/stm32-cmake/examples/` 下对应芯片家族的 HAL 示例创建项目。**不要自己编造 CMakeLists.txt——直接参考示例中的 CMakeLists.txt 写法。**
->
-> `stm32_fetch_cube` 参数、`find_package` 格式、`target_link_libraries` 的外设名全部以示例为准。
-
-**示例目录结构（AI 执行 `ls`）：**
 ```bash
-ls ~/stm32-tools/stm32-cmake/examples/
-# blinky/  fetch-cube/  freertos/  ...
+# 配置
+cmake -S . -B build -G Ninja
+
+# 编译
+cmake --build build 2>&1
+
+# 首次编译时 stm32_fetch_cube() 自动下载 CMSIS+HAL，约 30-60 秒
 ```
 
-> 如果使用 FreeRTOS：参考 `examples/freertos/` 目录的 CMakeLists.txt。
+> **CMakeLists.txt 配置通过后，AI 才开始写 code/src/main.c(pp)。**
 
-**code/src/main.c（HAL 模板）：**
+---
+
+## 六、第四步：应用代码
+
+### HAL + C 入口模板
+
 ```c
-#include "stm32f1xx_hal.h"
+// code/src/main.c
+#include "stm32l4xx_hal.h"
 
-// SystemClock_Config() — AI 根据用户选择的时钟频率生成
+static void SystemClock_Config(void) { /* AI 根据配置生成 */ }
+static void MX_USART1_UART_Init(void) { /* AI 根据配置生成 */ }
 
 int main(void) {
     HAL_Init();
     SystemClock_Config();
+    MX_USART1_UART_Init();
     while (1) {
-        // 用户的功能代码
+        // 用户功能代码
     }
 }
 ```
 
-**code/include/stm32f1xx_hal_conf.h：** 从 `~/stm32-tools/stm32-cmake/examples/blinky/stm32f1xx_hal_conf.h` 复制。AI 根据启用的外设打开对应 `#define`。
+### HAL + C++ 入口模板
 
-> 🔥 **复制后必须检查并添加以下宏（STM32F1 HAL 依赖但模板可能缺失）：**
-> ```c
-> #define HSE_STARTUP_TIMEOUT   100    // HSE 启动超时(ms)，默认模板可能没定义
-> #define LSE_STARTUP_TIMEOUT   5000   // LSE 启动超时(ms)，默认模板可能没定义
-> ```
-> 如果 RCC 模块 `#define HAL_RCC_MODULE_ENABLED` 已打开但没有这两个宏，编译会报 `undeclared` 错误。
+```cpp
+// code/src/main.cpp
+#include "stm32l4xx_hal.h"
 
-**HAL 规则：** 用了哪些 HAL 模块，打开对应 `#define` 并按 `HAL::STM32::F1::<模块名>` 链接。模块名 = HAL 驱动文件去掉前缀（如 `stm32f1xx_hal_uart.c` → `UART`）。
+// ISR 和 HAL 回调必须 extern "C"
+extern "C" void SysTick_Handler(void)
+{
+    HAL_IncTick();
+}
 
-## 外设 / 中间件配置指南
+extern "C" void HAL_UART_MspInit(UART_HandleTypeDef *huart) {
+    if (huart->Instance == USART1) {
+        __HAL_RCC_USART1_CLK_ENABLE();
+        __HAL_RCC_GPIOA_CLK_ENABLE();
 
-> **AI 无需记住所有外设配置。掌握以下发现方法，即可动态生成任意外设的代码。**
+        GPIO_InitTypeDef gpio = {};
+        gpio.Pin = GPIO_PIN_9 | GPIO_PIN_10;
+        gpio.Mode = GPIO_MODE_AF_PP;
+        gpio.Pull = GPIO_NOPULL;
+        gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+        gpio.Alternate = GPIO_AF7_USART1;
+        HAL_GPIO_Init(GPIOA, &gpio);
+    }
+}
 
-### 核心机制：stm32-cmake + ST HAL 覆盖所有外设
+static bool SystemClock_Config(void) { /* AI 根据配置生成 */ }
+static bool MX_USART1_UART_Init(void) { /* AI 根据配置生成 */ }
 
-stm32-cmake 的 `FindHAL.cmake` 在配置时自动扫描 ST HAL 源码，生成了所有外设的 CMake target。命名规则：
-
-```
-HAL::STM32::<家族>::<模块名>
-     │        │       └── RCC / GPIO / UART / TIM / SPI / I2C / DMA / ADC / ...
-     │        └── F1 / F4 / F7 / L0 / L4 / H7 / G0 / G4 / ...
-     └── 固定前缀
-```
-
-**模块名 = ST HAL 驱动文件名去掉前缀后的部分：**
-`stm32f1xx_hal_uart.c` → `UART`
-`stm32f1xx_hal_spi.c` → `SPI`
-`stm32f1xx_hal_dma.c` → `DMA`
-
-### AI 的自动发现流程
-
-当用户提出需要某个外设时，AI 按以下步骤自动完成：
-
-```
-第1步：分析需求 → 确定模块名
-  用户说"串口" → UART
-  用户说"SPI"  → SPI
-  用户说"I2C"  → I2C
-
-第2步：查找 ST HAL API
-  路径：build/_deps/stm32cubef1-src/Drivers/STM32F1xx_HAL_Driver/Inc/
-  文件：stm32f1xx_hal_<模块>.h → 包含所有函数声明和结构体定义
-
-第3步：修改 CMakeLists.txt
-  find_package(HAL COMPONENTS STM32F1 REQUIRED)  ← 不变，家族级
-  target_link_libraries(... HAL::STM32::F1::UART ...)  ← 加新外设
-
-第4步：修改 hal_conf.h
-  #define HAL_UART_MODULE_ENABLED  ← 去掉注释
-
-第5步：生成用户代码
-  参考 HAL API 文档和 CubeMX 的典型用法，生成初始化和服务函数
+int main(void) {
+    HAL_Init();
+    if (!SystemClock_Config()) Error_Handler();
+    if (!MX_USART1_UART_Init()) Error_Handler();
+    while (1) {
+        // 用户功能代码
+    }
+}
 ```
 
-### STM32F1 HAL 模块完整列表
+> ⚠️ **HAL 回调函数必须 `extern "C"`**：`HAL_MspInit`、`HAL_UART_MspInit`、`SysTick_Handler` 等。HAL 库是 C 代码，通过 C 链接调用回调，C++ 名称修饰会导致链接失败。
 
-以下列出 stm32-cmake 自动发现的 F1 系列全部 HAL 模块，AI 可按需选取：
+### CMSIS + C 入口模板
 
-| 分类 | 模块名 | CMake Target | 功能 |
-|------|--------|-------------|------|
-| 系统 | RCC | `HAL::STM32::F1::RCC` | 时钟配置 |
-| 系统 | GPIO | `HAL::STM32::F1::GPIO` | GPIO |
-| 系统 | CORTEX | `HAL::STM32::F1::CORTEX` | NVIC/SysTick |
-| 系统 | DMA | `HAL::STM32::F1::DMA` | DMA 传输 |
-| 系统 | PWR | `HAL::STM32::F1::PWR` | 电源管理 |
-| 外设 | UART | `HAL::STM32::F1::UART` | 串口 |
-| 外设 | USART | `HAL::STM32::F1::USART` | 同步/异步串口 |
-| 外设 | SPI | `HAL::STM32::F1::SPI` | SPI 总线 |
-| 外设 | I2C | `HAL::STM32::F1::I2C` | I2C 总线 |
-| 外设 | TIM | `HAL::STM32::F1::TIM` | 定时器/PWM |
-| 外设 | ADC | `HAL::STM32::F1::ADC` | 模数转换 |
-| 外设 | DAC | `HAL::STM32::F1::DAC` | 数模转换 |
-| 外设 | CAN | `HAL::STM32::F1::CAN` | CAN 总线 |
-| 外设 | RTC | `HAL::STM32::F1::RTC` | 实时时钟 |
-| 外设 | IWDG | `HAL::STM32::F1::IWDG` | 独立看门狗 |
-| 外设 | WWDG | `HAL::STM32::F1::WWDG` | 窗口看门狗 |
-| 外设 | FLASH | `HAL::STM32::F1::FLASH` | Flash 操作 |
-| 外设 | CRC | `HAL::STM32::F1::CRC` | CRC 校验 |
-| 通信 | ETH | `HAL::STM32::F1::ETH` | 以太网 |
-| 通信 | SD | `HAL::STM32::F1::SD` | SD 卡 |
-| USB | HCD | `HAL::STM32::F1::HCD` | USB 主机 |
-| USB | PCD | `HAL::STM32::F1::PCD` | USB 设备 |
+```c
+// code/src/main.c
+#include "stm32f1xx.h"
 
-### 中间件支持
+// 简易 SysTick 延时
+static void delay_ms(uint32_t ms) {
+    SysTick->LOAD = 72000 - 1;  // 72MHz
+    SysTick->VAL = 0;
+    SysTick->CTRL = SysTick_CTRL_CLKSOURCE_Msk | SysTick_CTRL_ENABLE_Msk;
+    for (uint32_t i = 0; i < ms; i++) {
+        while ((SysTick->CTRL & SysTick_CTRL_COUNTFLAG_Msk) == 0);
+    }
+    SysTick->CTRL = 0;
+}
 
-stm32-cmake 原生支持集成以下中间件（在 `FindCMSIS.cmake` 中实现）：
+int main(void) {
+    RCC->APB2ENR |= RCC_APB2ENR_IOPCEN;  // GPIOC 时钟
+    GPIOC->CRH &= ~(0xF << 20);
+    GPIOC->CRH |= (0x3 << 20);            // PC13 推挽输出
+    while (1) {
+        GPIOC->ODR ^= (1 << 13);          // LED 翻转
+        delay_ms(500);
+    }
+}
+```
 
-| 中间件 | 引入方式 | 说明 |
-|--------|---------|------|
-| **FreeRTOS** | `find_package(CMSIS COMPONENTS STM32F103C8 RTOS::FreeRTOS REQUIRED)` | 自动下载 FreeRTOS 源码 |
-| **FatFS** | 通过 CMSIS + HAL SD/SPI 手动集成 | 文件系统 |
-| **lwIP** | 通过 HAL ETH + 手动集成 | TCP/IP 协议栈 |
-| **USB Stack** | 通过 HAL PCD + 手动集成 | USB CDC/HID/MSC |
+### CMSIS + C++ 入口模板
 
-> 💡 **AI 的职责：** 根据用户需求，按上述发现流程组合 HAL 模块 + 中间件，生成 CMakeLists.txt、hal_conf.h、main.c。用户不需要知道具体的 CMake target 名称——AI 根据模块名规则自动推导。
+```cpp
+// code/src/main.cpp
+#include "stm32f1xx.h"
 
-### 时钟配置
+extern "C" void SysTick_Handler(void) {}  // C 链接 ISR
 
-| 参数 | HSI @ 48MHz（兜底方案） | HSE @ 72MHz（已验证） |
-|------|------------------------|---------------------|
-| 时钟源 | HSI 内部 8MHz RC | HSE 外部 8MHz 晶振（OSCIN/OSCOUT） |
-| PLL 输入 | HSI/2 = 4MHz | HSE = 8MHz |
-| PLLMUL | ×12 → 48MHz | ×9 → 72MHz |
-| FLASH_LATENCY | 1 | 2 |
-| 可靠性 | ✅ 100% | ✅ Blue Pill 验证通过 |
-| 策略 | 兜底，确保不出问题 | 优先尝试，失败自动回退 HSI |
-
-> 🔥 **最佳实践：HSE 优先 + HSI 兜底。** 先试外部晶振 72MHz → 如果 `HAL_RCC_OscConfig` 返回失败 → 自动回退到 HSI 48MHz。这样正品和克隆板都能跑，晶振好坏无所谓。
+int main(void) {
+    RCC->APB2ENR |= RCC_APB2ENR_IOPCEN;
+    GPIOC->CRH &= ~(0xF << 20);
+    GPIOC->CRH |= (0x3 << 20);
+    while (1) {
+        GPIOC->ODR ^= (1 << 13);
+        for (volatile int i = 0; i < 100000; i++);
+    }
+}
+```
 
 ---
 
-## 编译
+## 七、第五步：烧录
+
+### 路径 A（CubeProgrammer CLI）
 
 ```bash
-# 1. 配置（路径 A 和 B 完全相同）
-cmake -S . -B build -G Ninja -DCMAKE_MAKE_PROGRAM=ninja
-
-# 2. 编译
-cmake --build build
-
-# 3. 生成 .bin（路径 B st-flash 烧录需要）
-arm-none-eabi-objcopy -O binary build/my-project.elf build/my-project.bin
-```
-
-> 首次编译时 `stm32_fetch_cube()` 自动从 ST GitHub 下载 CMSIS + HAL，约 30-60 秒。后续编译增量编译很快。
->
-> **前置条件：** `~/stm32-tools/stm32-cmake/` 已全局安装（见"首次初始化"）。每个项目不再需要自己 clone。
->
-> 🔥 **ELF vs BIN 说明：**
-> | 工具 | 支持 ELF？ | 说明 |
-> |------|-----------|------|
-> | **OpenOCD** | ✅ 自动解析 ELF segments | `flash write_image xxx.elf` 正确 |
-> | **CubeProgrammer** | ✅ 自动解析 | `-w xxx.elf` 正确 |
-> | **st-flash** | ❌ **把 ELF 文件头原样写入 flash** | 必须 `objcopy -O binary` 先转 `.bin`！ |
-
----
-
-## 烧录
-
-### 路径 A：CubeProgrammer CLI（CubeIDE 已安装）
-
-优势：驱动已配好，即装即用。
-
-```bash
-# 定位 CubeProgrammer
 CUBEIDE_ROOT=$(ls -d /c/ST/*/STM32CubeIDE /d/ST/*/STM32CubeIDE 2>/dev/null | head -1)
 PROGRAMMER=$(ls "$CUBEIDE_ROOT/plugins/com.st.stm32cube.ide.mcu.externaltools.cubeprogrammer.win32_"*/tools/bin/STM32_Programmer_CLI.exe 2>/dev/null | head -1)
 
-# 三步烧录
-"$PROGRAMMER" -c port=SWD                              # 1. 连接
-"$PROGRAMMER" -c port=SWD -w build/my-project.elf -v   # 2. 写入+校验
-"$PROGRAMMER" -c port=SWD -rst -run                     # 3. 复位运行
+"$PROGRAMMER" -c port=SWD
+"$PROGRAMMER" -c port=SWD -w build/my-project.elf -v
+"$PROGRAMMER" -c port=SWD -rst -run
 ```
 
----
-
-### 路径 B：OpenOCD / st-flash（纯 CLI，无 CubeIDE）
-
-#### 前置：ST-Link 驱动修复（Windows 需要，参考经验）
-
-> **仅 Windows + 克隆版 ST-Link 可能需要。** 原装 ST-Link 在 Windows 上装 ST 官方驱动即可。macOS / Linux 免驱。
-> 以下 Zadig 操作来自克隆版 ST-Link V2 的实测经验。
-
-**参考操作（仅当设备管理器中 ST-Link 显示为未知设备或 VID:PID 异常时）：**
-1. 下载 [Zadig](https://zadig.akeo.ie/)（≈5MB，无需安装）
-2. 插上 ST-Link，打开 Zadig
-3. **Options → List All Devices**（勾上）
-4. 下拉列表找 **STM32 STLink**（或 `VID_0483&PID_3748`）
-5. 驱动选 **libusbK** → 点 **Replace Driver**
-
-**驱动兼容性（经验参考，克隆版 ST-Link V2 实测）：**
-
-| 驱动 | OpenOCD | st-flash | 说明 |
-|------|---------|----------|------|
-| **libusbK** | ✅ 稳定（检测/解锁/擦除） | ❌ LIBUSB_ERROR_TIMEOUT | 适用于 OpenOCD |
-| **WinUSB** | ⚠️ 不稳定 | ✅ 可用（烧录） | 适用于 st-flash |
-
-> 💡 **以上驱动兼容性来自克隆版 ST-Link V2 + CS32 芯片的实测。原装 ST-Link 用 ST 官方驱动最稳定。**
-
-#### B-1：OpenOCD（检测 + 解锁 + 擦除）
+### 路径 B（st-flash / OpenOCD）
 
 ```bash
-# 安装
-pacman -S --needed mingw-w64-x86_64-openocd
-
-# 验证连接
-openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
-    -c "adapter speed 5" -c "init" -c "reset halt" -c "shutdown"
-# 期望: Cortex-M3 r1p1 processor detected, flash size = 64 KiB
-```
-
-#### B-2：st-flash（烧录工具）
-
-> **以下模板在克隆版 ST-Link V2 + CS32 芯片上验证通过。** st-flash 使用 ST-Link 原生 flash 协议，对克隆芯片的兼容性优于 OpenOCD（OpenOCD 加载写算法到 RAM 时可能通信失败）。
->
-> 🔥🔥🔥 **重要：st-flash 需要 `.bin` 格式，不能直接烧 `.elf`！**
-> 
-> `st-flash write xxx.elf` 会把 **ELF 文件头原样写入 flash**（hexdump 读回来是 `7F 45 4C 46` = `"ELF"`），CPU 上电读到垃圾 SP/PC，**程序完全不执行但在 st-flash 里显示 verified OK**。
-> 
-> **必须先用 `arm-none-eabi-objcopy` 转 raw binary：**
-
-```bash
-# 安装
-pacman -S --needed mingw-w64-x86_64-stlink
-
-# 🔥 关键步骤：ELF → 裸二进制（缺此步程序不执行！）
+# st-flash（简单快速）
 arm-none-eabi-objcopy -O binary build/my-project.elf build/my-project.bin
-
-# 探测芯片
-st-info --probe
-# 期望: chipid: 0x0410, dev-type: STM32F1xx_MD
-
-# 烧录 .bin（不是 .elf！）
 st-flash --reset write build/my-project.bin 0x08000000
+# ✅ 期望: Flash written and verified! jolly good!
 
-# 烧录 .bin（不 reset，配合 BOOT0=1 使用）
-st-flash write build/my-project.bin 0x08000000
-
-# 验证 Flash 内容是否写入正确（读回前 32 字节）
-st-flash read /tmp/dump.bin 0x08000000 0x20
-hexdump -C /tmp/dump.bin | head -3
-# ✅ 正确: 00 50 00 20 xx xx 00 08 ...  (SP=0x20005000, PC=0x0800xxxx)
-# ❌ 错误: 7F 45 4C 46 01 01 01 00 ...  (= ELF 文件头，程序不跑)
+# OpenOCD（支持调试）
+openocd -f interface/stlink.cfg -f target/stm32l4x.cfg \
+    -c "program build/my-project.elf verify reset exit"
 ```
 
-> **成功标志：** `Flash written and verified! jolly good!` + 读回验证向量表正确。
+> 🔥 **重要：st-flash 必须烧 `.bin` 不是 `.elf`！** 直接烧 `.elf` 会把 ELF 文件头写入 flash（hexdump 读回是 `7F 45 4C 46` = `"ELF"`），CPU 上电读到垃圾 SP/PC，**程序完全不执行但显示 verified OK**。
 
-#### 烧录流程（参考，根据硬件调整）
+### 硬件接线
 
 ```
-# 6 针 ST-Link（含 NRST）：
-st-flash --reset write build/my-project.bin 0x08000000
-# 然后重新上电即可
+ST-Link                    目标板
+SWDIO (通常第2针)  ────→  SWDIO
+SWCLK (通常第4针)  ────→  SWCLK
+GND    ────────────→  GND
+3.3V   ────────────→  3.3V（如板子不独立供电）
 
-# 4 针 ST-Link（无 NRST，如 Blue Pill）——旧芯片 SWD 被锁时：
-1. BOOT0=1, 上电（进入 bootloader）
-2. libusbK + OpenOCD → unlock + mass_erase
-3. 切到 WinUSB + st-flash write .bin
-4. BOOT0=0, 重新上电 → 程序运行
-
-# 4 针 ST-Link（无 NRST）——新芯片 / 正常芯片：
-st-flash write build/my-project.bin 0x08000000
-# BOOT0=0 → 重新上电
+4 线即可完成烧录。NRST 线可选（用于自动复位）。
 ```
 
 ---
-## 🔥 SWD / 烧录问题排查（参考经验）
 
-> ⚠️ **以下问题与解决方案均来自特定硬件的实测，不能作为通用标准。** AI 按需参考，不应盲目执行。
+## 八、故障排错表
 
-### 路径 B 可能遇到的问题
+### 编译错误
 
-| # | 现象 | 根本原因 | 解决步骤 |
+| # | 报错信息 | 原因 | 修复 |
+|---|---------|------|------|
+| 1 | `UART_HandleTypeDef undeclared` / `TIM_HandleTypeDef undeclared` | hal_conf.h 中对应模块的 `#define HAL_xxx_MODULE_ENABLED` 被注释 | 去注释对应模块 |
+| 2 | `undefined reference to HAL_xxx` | CMakeLists.txt 中未链接对应 HAL module | `target_link_libraries` 中添加 `HAL::STM32::{F}::xxx` |
+| 3 | `cannot find -lSTM32::NoSys` | 未链接 `STM32::NoSys` | `target_link_libraries` 中加 `STM32::NoSys` |
+| 4 | `fatal error: stm32l4xx_hal.h: No such file` | include 路径不对 | CMakeLists.txt 中 `target_include_directories(${PROJECT_NAME}.elf PRIVATE code/include)` |
+| 5 | `cc1.exe: warning: '-std=c++17' is valid for C++ but not for C` | C++ 选项被传给 C 编译器 | 用 `$<$<COMPILE_LANGUAGE:CXX>:-std=c++17>` generator expression |
+| 6 | `undefined reference to HAL_xxx`（C++ 项目） | project 只写了 `CXX ASM`，HAL C 源文件未编译 | 改为 `project(... C CXX ASM)` |
+| 7 | `dangerous relocation: unsupported relocation`（C++ 项目） | HAL .c 文件未链接进目标 | 确保 `project()` 包含 C 语言 |
+| 8 | `request for member 'XferAbortCallback' in something not a structure or union` | DMA 模块未启用但 UART 驱动内部引用 | hal_conf.h 中启用 `HAL_DMA_MODULE_ENABLED` + CMakeLists 链接 `HAL::STM32::{F}::DMA` |
+| 9 | `LSE_STARTUP_TIMEOUT undeclared` / `HSE_STARTUP_TIMEOUT undeclared` | hal_conf.h 中未定义振荡器超时宏 | 添加 `#define HSE_STARTUP_TIMEOUT 100` / `#define LSE_STARTUP_TIMEOUT 5000` |
+| 10 | `HSI48_VALUE undeclared` / `EXTERNAL_SAI1_CLOCK_VALUE undeclared` | hal_conf.h 中缺少特定振荡器值 | 添加所有必需的 `xxx_VALUE` 定义（参考 hal_conf.h 章节） |
+| 11 | `undefined reference to HAL_PWREx_xxx` | L4 系列 PWREx 模块未链接 | 链接 `HAL::STM32::L4::PWREx` |
+| 12 | `undefined reference to HAL_RCCEx_PeriphCLKConfig` | RCCEx 模块未链接 | 链接 `HAL::STM32::{F}::RCCEx` |
+
+### 运行时问题
+
+| # | 现象 | 原因 | 修复 |
+|---|------|------|------|
+| 13 | 串口只输出部分数据后死机 | `SysTick_Handler` 未定义 | 添加 `extern "C" void SysTick_Handler(void) { HAL_IncTick(); }` |
+| 14 | `HAL_Delay` 不工作 | PLL 切换后 SysTick 未重配 | 添加 `HAL_SYSTICK_Config(HAL_RCC_GetHCLKFreq() / 1000)` |
+| 15 | STM32L4 PLL 80MHz 不稳定 / 死机 | 未调用 `HAL_PWREx_ControlVoltageScaling(SCALE1)` | 在 `SystemClock_Config` 开头调用 |
+| 16 | `HAL_PWREx_ControlVoltageScaling` 返回 HAL_ERROR | `HAL_MspInit` 未启用 `PWR` 时钟 | `HAL_MspInit` 中添加 `__HAL_RCC_PWR_CLK_ENABLE()` |
+| 17 | `multiple definition of SysTick_Handler`（FreeRTOS） | 用户定义了 SysTick_Handler 但 FreeRTOS 已接管 | 删除用户定义，FreeRTOS 占用 SysTick |
+| 18 | FreeRTOS + HAL_Delay 都不工作 | HAL 时基仍用 SysTick（被 FreeRTOS 占用） | HAL 时基改为硬件定时器。在 hal_conf.h 中启用 `USE_HAL_TIM_REGISTER_CALLBACKS`，用 `HAL_InitTick(TICK_INT_PRIORITY)` 自定义 |
+| 19 | `Flash written and verified` 但程序不跑 | st-flash 烧了 .elf（文件头被当成代码） | `arm-none-eabi-objcopy -O binary xxx.elf xxx.bin` 后烧 .bin |
+| 20 | USB 串口收到乱码 | 波特率不匹配（通常因时钟配置与实际不符） | 检查 `SystemClock_Config` 是否正确执行 |
+
+### 连接/烧录问题
+
+| # | 现象 | 可能原因 | 排查顺序 |
 |---|------|---------|---------|
-| 1 | `VID:PID 0000:0000` 或 `init mode failed` | CubeIDE 卸载后驱动破损 | 设备管理器卸载设备 → Zadig 选 libusbK → Replace Driver |
-| 2 | `LIBUSB_ERROR_TIMEOUT` | 驱动不匹配 | Zadig 切换到另一个驱动（libusbK ↔ WinUSB） |
-| 3 | `Couldn't find any ST-Link devices` | USB 无驱动 | Zadig 安装 libusbK 或 WinUSB |
-| 4 | `chipid: 0x000` + `Failed to enter SWD mode` | SWD 被用户程序锁死 | 见下方"救砖流程" → OpenOCD unlock + mass_erase |
-| 5 | `NRST is not connected` | 4 针 ST-Link 无 RST 线 | 无需硬件 RST — 用 BOOT0 救砖替代 |
-| 6 | `jtag status...communication failure` (OpenOCD 写 flash) | **克隆版 CS32 芯片** flash 写算法不兼容 | 切到 WinUSB + st-flash 写入（ST 原生协议） |
-| 7 | `Flash written and verified` 但程序不跑 | **st-flash 烧了 .elf**（ELF 文件头被当成代码写入 flash） | `arm-none-eabi-objcopy -O binary xxx.elf xxx.bin` 后烧 .bin |
-| 8 | 烧录后程序不跑（其他原因） | BOOT0 仍为 1 | BOOT0 跳回 0，重新上电 |
-| 9 | 程序跑但 `HAL_Delay` 不工作 | 切换 PLL 后未重配 SysTick | 加 `HAL_SYSTICK_Config(HAL_RCC_GetHCLKFreq()/1000)` + `SysTick_Handler` |
-
-### 4 针 ST-Link 无 NRST 时的救砖方法（经验参考）
-
-> ⚠️ **仅适用于特定硬件。** 如果你的 ST-Link 有 6 针（含 NRST），直接用硬件复位即可，无需以下操作。
-> 以下方法来自 Blue Pill（4 针 SWD + BOOT0 跳线帽）的实测经验。
-
-```
-1. 断电（拔 USB）
-2. BOOT0 跳线帽 → 1, BOOT1 跳线帽 → 0（进入系统 bootloader）
-3. 重新上电（此时 SWD 被 bootloader 释放）
-4. libusbK + OpenOCD → unlock + mass_erase（清除旧固件，释放 SWD）
-5. 断电（不拔 USB，SWD 保持在 bootloader 模式）
-6. 切驱动 WinUSB + st-flash → 烧录新固件
-7. 断电 → BOOT0 跳回 0 → 重新上电 → 程序运行
-```
-
-> ⚠️ **BOOT1 必须为 0。** BOOT1=1 + BOOT0=1 进入 SRAM 启动（SRAM 为空则行为不可预测）→ SWD 同样连不上。
->
-> 💡 **为什么分两步（libusbK 擦除 → WinUSB 烧录）？**
-> 克隆版 ST-Link 搭配的 CS32 芯片与 OpenOCD 的 flash 写算法不兼容（`jtag status contains invalid mode value`）。但 st-flash 使用 ST-Link 的专有 flash 协议绕过此问题。所以用 OpenOCD 擦除，st-flash 写入。
-
-### 路径 A 与路径 B 的烧录对比（经验参考）
-
-| | 路径 A (CubeProgrammer) | 路径 B (st-flash) |
-|---|---|---|
-| 驱动 | ST 专有（自动装好） | WinUSB（Windows 需 Zadig one-time） |
-| 6 针含 NRST | ✅ 一键烧录 | ✅ 一键烧录 |
-| 4 针无 NRST | ❌ 需 NRST | ✅ 可通过 BOOT0 救砖 |
-
-### 验证连接成功的标志
-
-| 工具 | 成功标志 |
-|------|---------|
-| OpenOCD | `Cortex-M3 r1p1 processor detected` + `flash size = 64 KiB` |
-| st-info | `chipid: 0x0410` + `dev-type: STM32F1xx_MD` |
-| CubeProgrammer | `Target voltage: 3.xxV` + 无 error |
+| 21 | `st-info --probe` 报 `Couldn't find any ST-Link` | USB 无驱动 / 线松动 | ① 重插 USB ② Windows: 检查设备管理器 |
+| 22 | `st-flash` 返回 `LIBUSB_ERROR_TIMEOUT` | 驱动问题 | 检查 ST-Link 驱动是否正确安装 |
+| 23 | `chipid: 0x000` + `Failed to enter SWD mode` | SWD 被用户程序锁死 | 断电 → BOOT0=1 上电 → 擦除芯片 → BOOT0=0 |
+| 24 | OpenOCD 报 `init mode failed` | 驱动/权限问题 | Windows: 检查设备管理器；Linux: `sudo` |
 
 ---
 
-## 芯片型号速查
+## 九、外设模块速查
+
+> **AI 无需死记外设配置。HAL 模块名 = HAL 驱动文件名去掉前缀后全大写。**
+> 如 `stm32l4xx_hal_uart.c` → CMake target: `HAL::STM32::L4::UART`
+
+| 分类 | 模块 | CMake Target | 功能 |
+|------|------|-------------|------|
+| 必选 | RCC | `HAL::STM32::{F}::RCC` | 时钟配置 |
+| 必选 | GPIO | `HAL::STM32::{F}::GPIO` | 输入/输出 |
+| 必选 | CORTEX | `HAL::STM32::{F}::CORTEX` | NVIC / SysTick |
+| 必选 | DMA | `HAL::STM32::{F}::DMA` | DMA（UART/SPI 内部依赖） |
+| 必选 | FLASH | `HAL::STM32::{F}::FLASH` | Flash 操作 |
+| 必选 | PWR | `HAL::STM32::{F}::PWR` | 电源管理 |
+| 通信 | UART | `HAL::STM32::{F}::UART` | 异步串口 |
+| 通信 | USART | `HAL::STM32::{F}::USART` | 同步/异步串口 |
+| 通信 | SPI | `HAL::STM32::{F}::SPI` | SPI |
+| 通信 | I2C | `HAL::STM32::{F}::I2C` | I2C |
+| 通信 | CAN | `HAL::STM32::{F}::CAN` | CAN 总线 |
+| 定时 | TIM | `HAL::STM32::{F}::TIM` | 定时器/PWM |
+| 定时 | RTC | `HAL::STM32::{F}::RTC` | 实时时钟 |
+| 模拟 | ADC | `HAL::STM32::{F}::ADC` | ADC |
+| 模拟 | DAC | `HAL::STM32::{F}::DAC` | DAC |
+| 看门狗 | IWDG | `HAL::STM32::{F}::IWDG` | 独立看门狗 |
+| 看门狗 | WWDG | `HAL::STM32::{F}::WWDG` | 窗口看门狗 |
+| 存储 | SD | `HAL::STM32::{F}::SD` | SD 卡 |
+| 存储 | QSPI | `HAL::STM32::{F}::QSPI` | Quad-SPI |
+| USB | PCD | `HAL::STM32::{F}::PCD` | USB 设备 |
+| ETH | ETH | `HAL::STM32::{F}::ETH` | 以太网 |
+| CRC | CRC | `HAL::STM32::{F}::CRC` | CRC |
+| 随机数 | RNG | `HAL::STM32::{F}::RNG` | 硬件随机数 |
+| 扩展 | RCCEx | `HAL::STM32::{F}::RCCEx` | 扩展时钟 |
+| 扩展 | PWREx | `HAL::STM32::{F}::PWREx` | 扩展电源（L4/F4/F7/H7） |
+
+---
+
+## 十、芯片型号速查
 
 | 系列 | 芯片 | Flash | RAM | 封装 | CMSIS 类型 |
 |------|------|-------|-----|------|-----------|
-| F1 | F103C8 | 64KB | 20KB | LQFP48 | F103xB |
-| F1 | F103CB | 128KB | 20KB | LQFP48 | F103xB |
-| F1 | F103RC | 256KB | 48KB | LQFP64 | F103xE |
-| F1 | F103ZE | 512KB | 64KB | LQFP144 | F103xG |
+| F1 | F103C8T6 | 64KB | 20KB | LQFP48 | F103xB |
+| F1 | F103RCT6 | 256KB | 48KB | LQFP64 | F103xE |
+| F1 | F103VCT6 | 512KB | 64KB | LQFP100 | F103xG |
 | L4 | L431VCTx | 256KB | 64KB | LQFP100 | L431xx |
 | L4 | L476RGTx | 1MB | 128KB | LQFP64 | L476xx |
 | F4 | F407VGT6 | 1MB | 192KB | LQFP100 | F407xx |
@@ -631,59 +646,8 @@ st-flash write build/my-project.bin 0x08000000
 
 ---
 
----
-
-## 🔥 参考经验（非 SOP）
-
-> ⚠️ **以下全部内容来自特定硬件的实测记录。** 仅供参考。AI 不能将其作为默认操作流程，应根据用户的实际硬件情况按需参考。
-
-### 已验证完整流程（路径 B，纯 CLI）
-
-验证硬件：Windows MSYS2 + 克隆版 ST-Link V2 + CS32 芯片 + Blue Pill (F103C8T6, 4针无NRST, 8MHz HSE晶振)。
-验证结果：CMSIS 寄存器模式 ✅ / HAL 模式 (HSE 72MHz) ✅
-
-
-
-```bash
-# ===== 一次性环境准备（整个电脑做一次） =====
-# Windows (MSYS2):
-pacman -S --needed \
-    mingw-w64-x86_64-arm-none-eabi-gcc \
-    mingw-w64-x86_64-cmake \
-    mingw-w64-x86_64-ninja \
-    mingw-w64-x86_64-stlink
-# macOS:
-# brew install --cask gcc-arm-embedded && brew install cmake ninja stlink
-# Linux:
-# sudo apt install -y gcc-arm-none-eabi cmake ninja-build stlink-tools
-
-export PATH="$PATH"  # 确保 arm-none-eabi-gcc/cmake/ninja/st-flash 在 PATH
-mkdir -p ~/stm32-tools
-git clone --depth=1 https://github.com/ObKo/stm32-cmake.git ~/stm32-tools/stm32-cmake
-# Windows only: Zadig → STM32 STLink → WinUSB → Replace Driver
-
-# ===== 每次创建项目 =====
-# 在工作目录下，编写 CMakeLists.txt + main.c
-# CMakeLists.txt 第一行必须是: set(CMAKE_TOOLCHAIN_FILE $ENV{HOME}/stm32-tools/...)
-
-# ===== 编译 =====
-cmake -S . -B build -G Ninja -DCMAKE_MAKE_PROGRAM=ninja
-cmake --build build
-
-# ===== 烧录 =====
-arm-none-eabi-objcopy -O binary build/my-project.elf build/my-project.bin
-st-flash write build/my-project.bin 0x08000000
-
-# ===== 运行 =====
-# BOOT0=0 → 重新上电
-```
-
-**硬件接线：** ST-Link(SWDIO→SWIO)+(SWCLK→SWCLK)+(GND→GND)+(3V3→3V3)，共 4 线。如果 ST-Link 有 NRST 引脚的 6 针版，则 `st-flash --reset` 可直接复位运行。
-
 ## 参考资源
 
 - [ObKo/stm32-cmake](https://github.com/ObKo/stm32-cmake) — CMake 框架（MIT 开源）
 - [ST GitHub](https://github.com/STMicroelectronics) — HAL/CMSIS 源码（`stm32_fetch_cube()` 自动拉取）
-- [Zadig](https://zadig.akeo.ie/) — USB 驱动管理（路径 B 必需）
-- [OpenOCD](https://openocd.org/) — 开源调试/烧录
 - [ARM GNU Toolchain](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads)
