@@ -149,27 +149,37 @@ AI: 请确认你的 STM32 芯片型号（看芯片表面丝印），例如：
     - "读 ADC1 通道 0 的温度传感器并通过 UART 打印"
     - "驱动 I2C OLED 显示屏"
   → AI 根据回答自主决定继续追问哪些外设配置（SPI/I2C/TIM/ADC/DMA 等）
-  → AI 完成后总结计划，让用户确认再开始生成代码
+  → AI 完成后总结计划，让用户确认
+
+第6条：确认硬件连接（访谈结束时必问）
+  AI: "硬件已经连接好且上电了吗？"
+  → 用户确认后，AI 才开始生成文件
 ```
 
-> 💡 **以上 5 条是标准 SOP。** 硬件差异（LED 引脚、有无 NRST、BOOT 跳线等）不在项目初始化流程中体现——它们只在烧录/救砖阶段遇到问题时才按需处理。
+> 💡 **以上 6 条是标准 SOP。** 硬件差异（LED 引脚、有无 NRST、BOOT 跳线等）不在项目初始化流程中体现——它们只在烧录/救砖阶段遇到问题时才按需处理。
+>
+> 📝 **C vs C++ 约定：** 如果用户选择 C++，入口文件为 `code/src/main.cpp`，CMakeLists.txt 中 `project(... CXX ASM C)`。
 
-### 第五步：生成代码并验证编译（‼️ 必须编译通过才算完成）
+### 第五步：配置 CMakeLists.txt（先做工程配置，再写代码）
 
-> **AI 生成代码后，必须立即运行编译并修复所有错误，直到 `cmake --build build` 成功。不能把编译失败的项目交给用户。**
+> **AI 必须先完成 CMakeLists.txt 配置，再开始写应用代码。** 工程配置决定编译目标、外设依赖和 include 路径，代码依赖这些配置。
 
 **标准流程：**
 
 ```
-1. AI 根据访谈结果生成所有文件：
-   CMakeLists.txt、code/src/main.c、code/include/stm32f1xx_hal_conf.h
-
-2. 立即编译：
+1. AI 参考 ~/stm32-tools/stm32-cmake/examples/ 下对应芯片家族的示例 CMakeLists.txt
+2. 根据访谈结果配置：
+   - stm32_fetch_cube(系列)  — 根据芯片型号
+   - find_package — CMSIS + HAL（+ RTOS::FreeRTOS 如需要）
+   - target_link_libraries — 按启用的外设逐个链接 HAL module
+   - include_directories(code/include)
+   - file(GLOB_RECURSE SOURCES code/src/*.c [code/src/*.cpp 如 C++])
+   - 入口文件名：C 用 code/src/main.c，C++ 用 code/src/main.cpp
+3. 复制并修改 hal_conf.h：打开对应模块 #define，添加 LSE/HSE_STARTUP_TIMEOUT 宏
+4. 立即编译验证 CMakeLists.txt 正确：
    cmake -S . -B build -G Ninja && cmake --build build 2>&1
-
-3. 根据编译错误逐一修复 → 重新编译 → 直到成功
-
-4. 最后输出编译报告：文件数量、体积、编译状态
+   → 如果报错，根据常见编译错误表修复，直到 cmake 配置阶段通过
+5. CMakeLists.txt 配置通过后，再开始写 code/src/main.c(main.cpp)
 ```
 
 **常见编译错误及修复方法（AI 必须自查）：**
@@ -183,7 +193,28 @@ AI: 请确认你的 STM32 芯片型号（看芯片表面丝印），例如：
 | `cannot find -lSTM32::NoSys` | 未链接 `STM32::NoSys` | `target_link_libraries` 中加 `STM32::NoSys` |
 | `fatal error: stm32f1xx_hal.h: No such file` | include 路径不对 | CMakeLists.txt 中 `include_directories(code/include)` |
 
-> 🔥 **AI 的职责：生成代码 → 编译 → 报错 → 修复 → 重新编译 → 直到 `[N/N] Target Sizes` 显示正确的体积 → 这才算代码生成完成。**
+### 第六步：编译 + 烧录
+
+> **AI 在生成应用代码后，立即编译 + 烧录验证。**
+
+**标准流程：**
+
+```
+1. 编译：
+   cmake -S . -B build -G Ninja && cmake --build build 2>&1
+   → 根据编译错误逐一修复 → 重新编译 → 直到成功
+
+2. 烧录（路径 B）：
+   arm-none-eabi-objcopy -O binary build/my-project.elf build/my-project.bin
+   st-flash write build/my-project.bin 0x08000000
+   
+   或（路径 A）：
+   CubeProgrammer_CLI -c port=SWD -w build/my-project.elf -v -rst -run
+
+3. 输出编译报告：文件数量、体积、编译状态、烧录状态
+```
+
+> 🔥 **AI 的职责：CMakeLists 配置 → 编译 → 报错 → 修复 → 重新编译 → 烧录 → 直到成功。不能把编译失败或未烧录的项目交给用户。**
 
 ---
 
@@ -283,7 +314,14 @@ int main(void) {
 
 **code/include/stm32f1xx_hal_conf.h：** 从 `~/stm32-tools/stm32-cmake/examples/blinky/stm32f1xx_hal_conf.h` 复制。AI 根据启用的外设打开对应 `#define`。
 
-> **HAL 规则：** 用了哪些 HAL 模块，打开对应 `#define` 并按 `HAL::STM32::F1::<模块名>` 链接。模块名 = HAL 驱动文件去掉前缀（如 `stm32f1xx_hal_uart.c` → `UART`）。
+> 🔥 **复制后必须检查并添加以下宏（STM32F1 HAL 依赖但模板可能缺失）：**
+> ```c
+> #define HSE_STARTUP_TIMEOUT   100    // HSE 启动超时(ms)，默认模板可能没定义
+> #define LSE_STARTUP_TIMEOUT   5000   // LSE 启动超时(ms)，默认模板可能没定义
+> ```
+> 如果 RCC 模块 `#define HAL_RCC_MODULE_ENABLED` 已打开但没有这两个宏，编译会报 `undeclared` 错误。
+
+**HAL 规则：** 用了哪些 HAL 模块，打开对应 `#define` 并按 `HAL::STM32::F1::<模块名>` 链接。模块名 = HAL 驱动文件去掉前缀（如 `stm32f1xx_hal_uart.c` → `UART`）。
 
 ## 外设 / 中间件配置指南
 
