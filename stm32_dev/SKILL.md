@@ -154,6 +154,37 @@ AI: 请确认你的 STM32 芯片型号（看芯片表面丝印），例如：
 
 > 💡 **以上 5 条是标准 SOP。** 硬件差异（LED 引脚、有无 NRST、BOOT 跳线等）不在项目初始化流程中体现——它们只在烧录/救砖阶段遇到问题时才按需处理。
 
+### 第五步：生成代码并验证编译（‼️ 必须编译通过才算完成）
+
+> **AI 生成代码后，必须立即运行编译并修复所有错误，直到 `cmake --build build` 成功。不能把编译失败的项目交给用户。**
+
+**标准流程：**
+
+```
+1. AI 根据访谈结果生成所有文件：
+   CMakeLists.txt、code/src/main.c、code/include/stm32f1xx_hal_conf.h
+
+2. 立即编译：
+   cmake -S . -B build -G Ninja && cmake --build build 2>&1
+
+3. 根据编译错误逐一修复 → 重新编译 → 直到成功
+
+4. 最后输出编译报告：文件数量、体积、编译状态
+```
+
+**常见编译错误及修复方法（AI 必须自查）：**
+
+| 报错 | 原因 | 修复 |
+|------|------|------|
+| `UART_HandleTypeDef undeclared` / `TIM_HandleTypeDef undeclared` | hal_conf.h 中对应模块的 `#define HAL_xxx_MODULE_ENABLED` 被注释 | 去注释 `#define HAL_UART_MODULE_ENABLED` 等 |
+| `LSE_STARTUP_TIMEOUT undeclared` / `HSE_STARTUP_TIMEOUT undeclared` | hal_conf.h 中未定义振荡器超时宏 | 在 stm32f1xx_hal_conf.h 中添加：`#define HSE_STARTUP_TIMEOUT 100` / `#define LSE_STARTUP_TIMEOUT 5000` |
+| `undefined reference to HAL_xxx` | CMakeLists.txt 中未链接对应 HAL module | `target_link_libraries(... HAL::STM32::F1::UART ...)` |
+| `multiple definition of SysTick_Handler` | 用户定义了 SysTick_Handler 但 HAL 内部也有 | 如果用了 FreeRTOS，删掉用户写的 SysTick_Handler，由 RTOS 接管；否则保留 |
+| `cannot find -lSTM32::NoSys` | 未链接 `STM32::NoSys` | `target_link_libraries` 中加 `STM32::NoSys` |
+| `fatal error: stm32f1xx_hal.h: No such file` | include 路径不对 | CMakeLists.txt 中 `include_directories(code/include)` |
+
+> 🔥 **AI 的职责：生成代码 → 编译 → 报错 → 修复 → 重新编译 → 直到 `[N/N] Target Sizes` 显示正确的体积 → 这才算代码生成完成。**
+
 ---
 
 ## 两条路径总览
@@ -176,169 +207,83 @@ AI: 请确认你的 STM32 芯片型号（看芯片表面丝印），例如：
 
 ## 创建新项目（两条路径通用）
 
-### 项目目录结构
+### 项目目录结构（标准 SOP）
 
 ```
 my_project/
 ├── CMakeLists.txt              ← CMake 项目文件
-├── main.c                      ← 主程序
-├── stm32f1xx_hal_conf.h        ← [仅 HAL 模式需要]
+├── code/
+│   ├── include/                ← 头文件（hal_conf.h, 自定义 .h）
+│   │   └── stm32f1xx_hal_conf.h    [仅 HAL 模式]
+│   └── src/                    ← 源码（main.c, 模块 .c）
+│       └── main.c
 └── build/                      ← cmake -B build 自动生成
 ```
 
-> `stm32-cmake/` **不需要放在项目里。** 它是全局安装的（`~/stm32-tools/stm32-cmake/`），CMakeLists.txt 通过绝对路径引用。
+> **这是标准目录结构。** AI 创建项目时自动生成 `code/include/` 和 `code/src/` 目录。`stm32-cmake/` 全局安装在 `~/stm32-tools/stm32-cmake/`，不需要放在项目里。
 
 ### 两种开发模式
 
 | 对比维度 | **CMSIS 寄存器模式** | **HAL 库模式** |
 |----------|---------------------|----------------|
-| 体积 | ~912 bytes | ~2400 bytes |
 | 依赖 | CMSIS 头文件（自动下载） | CMSIS + HAL 驱动（自动下载） |
 | 代码风格 | 直接操作寄存器 | HAL API 调用 |
-| `hal_conf.h` | 不需要 | **必须提供** |
-| 链接目标 | `CMSIS::STM32::F103C8` | `HAL::STM32::F1::RCC` `HAL::STM32::F1::GPIO` `HAL::STM32::F1::CORTEX` |
-| 使用场景 | 极致精简、学习底层 | 快速开发、复杂外设 |
-| 可靠性 | ✅ 100% 可靠（不依赖时钟/中断） | ⚠️ 需注意 SysTick 配置 |
+| hal_conf.h | 不需要 | 必须提供 |
+| CMake find_package | `CMSIS COMPONENTS STM32F103C8` | 加 `HAL COMPONENTS STM32F1` |
+| 链接方式 | 仅 CMSIS | 按外设逐个链接 HAL module |
+| 适用场景 | 极致精简、学习底层 | 快速开发、复杂外设 |
 
 ---
 
-### 模式 A：CMSIS 寄存器模式（零额外文件，已实测验证）
+### 模式 A：CMSIS 寄存器模式
 
-> 🔥 **此模板在 Blue Pill (F103C8T6, PC13 LED Active Low) 上验证通过。** 如果你的 LED 在别的引脚或极性不同，调整 `GPIO_PIN` 和 `BSRR/BR13` 即可。
+> 无 `hal_conf.h`、无 HAL 依赖。AI 参考 `~/stm32-tools/stm32-cmake/examples/blinky/` 的 CMakeLists.txt 创建项目结构，源码用裸机寄存器风格。
 
-**CMakeLists.txt：**
-```cmake
-cmake_minimum_required(VERSION 3.16)
-set(CMAKE_TOOLCHAIN_FILE $ENV{HOME}/stm32-tools/stm32-cmake/cmake/stm32_gcc.cmake)
-project(my-project C ASM)
-stm32_fetch_cube(F1)
-find_package(CMSIS COMPONENTS STM32F103C8 REQUIRED)
-add_executable(my-project.elf main.c)
-target_link_libraries(my-project.elf CMSIS::STM32::F103C8 STM32::NoSys)
-stm32_print_size_of_target(my-project.elf)
-```
-
-**main.c（已验证，PC13 Active Low + 软件延时）：**
+**code/src/main.c 模板：**
 ```c
 #include "stm32f1xx.h"
 
-void Delay_ms(uint16_t ms) {
-    uint16_t i, j;
-    for (i = 0; i < ms; i++)
-        for (j = 0; j < 4784; j++);
-}
-
 int main(void) {
-    RCC->APB2ENR |= RCC_APB2ENR_IOPCEN;
-    GPIOC->CRH &= ~GPIO_CRH_CNF13;
-    GPIOC->CRH |= GPIO_CRH_MODE13_0 | GPIO_CRH_MODE13_1;
-
     while (1) {
-        GPIOC->BSRR = GPIO_BSRR_BR13;   // PC13 LOW  = LED 亮 (Active Low)
-        Delay_ms(500);
-        GPIOC->BSRR = GPIO_BSRR_BS13;   // PC13 HIGH = LED 灭
-        Delay_ms(500);
+        // 用户的功能代码
     }
 }
 ```
-
-> 💡 **关于 PC13：** Blue Pill 的 LED 是 Active Low——`BR13`（Bit Reset）= LOW = 灯亮，`BS13`（Bit Set）= HIGH = 灯灭。
 
 ---
 
 ### 模式 B：HAL 库模式
 
-**CMakeLists.txt：**
-```cmake
-cmake_minimum_required(VERSION 3.16)
-set(CMAKE_TOOLCHAIN_FILE $ENV{HOME}/stm32-tools/stm32-cmake/cmake/stm32_gcc.cmake)
-project(my-project C ASM)
-stm32_fetch_cube(F1)
-set(CMAKE_INCLUDE_CURRENT_DIR TRUE)
+> AI 参考 `~/stm32-tools/stm32-cmake/examples/` 下对应芯片家族的 HAL 示例创建项目。**不要自己编造 CMakeLists.txt——直接参考示例中的 CMakeLists.txt 写法。**
+>
+> `stm32_fetch_cube` 参数、`find_package` 格式、`target_link_libraries` 的外设名全部以示例为准。
 
-find_package(CMSIS COMPONENTS STM32F103C8 REQUIRED)
-find_package(HAL COMPONENTS STM32F1 REQUIRED)        # 家族级
-
-add_executable(my-project.elf main.c stm32f1xx_hal_conf.h)
-target_link_libraries(my-project.elf
-    HAL::STM32::F1::RCC      # 按外设逐个链接
-    HAL::STM32::F1::GPIO
-    HAL::STM32::F1::CORTEX
-    CMSIS::STM32::F103C8
-    STM32::NoSys
-)
-stm32_print_size_of_target(my-project.elf)
+**示例目录结构（AI 执行 `ls`）：**
+```bash
+ls ~/stm32-tools/stm32-cmake/examples/
+# blinky/  fetch-cube/  freertos/  ...
 ```
 
-**main.c（HAL + HSE 优先 + HSI 兜底，已验证：72MHz 正常 1Hz 闪烁）：**
+> 如果使用 FreeRTOS：参考 `examples/freertos/` 目录的 CMakeLists.txt。
+
+**code/src/main.c（HAL 模板）：**
 ```c
 #include "stm32f1xx_hal.h"
 
-void SystemClock_Config(void) {
-    RCC_OscInitTypeDef osc = {0};
-    RCC_ClkInitTypeDef clk = {0};
-    uint8_t hse_ok = 0;
-
-    // 第1步：优先试 HSE 外部晶振 72MHz
-    osc.OscillatorType = RCC_OSCILLATORTYPE_HSE;
-    osc.HSEState = RCC_HSE_ON;
-    osc.PLL.PLLState = RCC_PLL_ON;
-    osc.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-    osc.PLL.PLLMUL = RCC_PLL_MUL9;
-
-    if (HAL_RCC_OscConfig(&osc) == HAL_OK) {
-        clk.ClockType = RCC_CLOCKTYPE_SYSCLK|RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-        clk.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-        clk.AHBCLKDivider = RCC_SYSCLK_DIV1;
-        clk.APB1CLKDivider = RCC_HCLK_DIV2;
-        clk.APB2CLKDivider = RCC_HCLK_DIV1;
-        if (HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_2) == HAL_OK)
-            hse_ok = 1;
-    }
-
-    if (!hse_ok) {
-        // 第2步：HSE 失败 → 回退 HSI 48MHz
-        RCC->CR &= ~(RCC_CR_HSEON | RCC_CR_PLLON);
-        while (RCC->CR & RCC_CR_PLLRDY);
-
-        osc.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-        osc.HSIState = RCC_HSI_ON;
-        osc.PLL.PLLSource = RCC_PLLSOURCE_HSI_DIV2;
-        osc.PLL.PLLMUL = RCC_PLL_MUL12;
-        HAL_RCC_OscConfig(&osc);
-        HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_1);
-    }
-
-    HAL_SYSTICK_Config(HAL_RCC_GetHCLKFreq() / 1000);
-    HAL_SYSTICK_CLKSourceConfig(SYSTICK_CLKSOURCE_HCLK);
-}
-
-void SysTick_Handler(void) { HAL_IncTick(); }
+// SystemClock_Config() — AI 根据用户选择的时钟频率生成
 
 int main(void) {
     HAL_Init();
     SystemClock_Config();
-    __HAL_RCC_GPIOC_CLK_ENABLE();
-    GPIO_InitTypeDef cfg = {0};
-    cfg.Pin = GPIO_PIN_13; cfg.Mode = GPIO_MODE_OUTPUT_PP; cfg.Speed = GPIO_SPEED_FREQ_HIGH;
-    HAL_GPIO_Init(GPIOC, &cfg);
     while (1) {
-        HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
-        HAL_Delay(500);
+        // 用户的功能代码
     }
 }
 ```
 
-**stm32f1xx_hal_conf.h：** 从 `~/stm32-tools/stm32-cmake/examples/blinky/stm32f1xx_hal_conf.h` 复制。AI 创建 HAL 项目时自动生成。
+**code/include/stm32f1xx_hal_conf.h：** 从 `~/stm32-tools/stm32-cmake/examples/blinky/stm32f1xx_hal_conf.h` 复制。AI 根据启用的外设打开对应 `#define`。
 
-> **关键规则：** 用了哪些 HAL 模块，就打开对应 `#define` 并按 `HAL::STM32::F1::<模块名>` 链接。
->
-> **HAL 模式说明：**
-> - 使用 **HSE 优先 + HSI 兜底** 模式（`HAL_RCC_OscConfig` 检查返回值，失败自动回退）
-> - 时钟切换后需要重配 SysTick：`HAL_SYSTICK_Config(HAL_RCC_GetHCLKFreq()/1000)`
-> - `find_package(HAL ...)` 是**家族级** `STM32F1`，不是设备级 `STM32F103C8`
-
----
+> **HAL 规则：** 用了哪些 HAL 模块，打开对应 `#define` 并按 `HAL::STM32::F1::<模块名>` 链接。模块名 = HAL 驱动文件去掉前缀（如 `stm32f1xx_hal_uart.c` → `UART`）。
 
 ## 外设 / 中间件配置指南
 
@@ -579,7 +524,7 @@ st-flash write build/my-project.bin 0x08000000
 ---
 ## 🔥 SWD / 烧录问题排查（参考经验）
 
-> ⚠️ **以下问题与解决方案均来自特定硬件的实测，不能作为通用标准。** AI 必须先确认用户的硬件配置（步骤三），再从中选取可能相关的条目。
+> ⚠️ **以下问题与解决方案均来自特定硬件的实测，不能作为通用标准。** AI 按需参考，不应盲目执行。
 
 ### 路径 B 可能遇到的问题
 
@@ -593,8 +538,7 @@ st-flash write build/my-project.bin 0x08000000
 | 6 | `jtag status...communication failure` (OpenOCD 写 flash) | **克隆版 CS32 芯片** flash 写算法不兼容 | 切到 WinUSB + st-flash 写入（ST 原生协议） |
 | 7 | `Flash written and verified` 但程序不跑 | **st-flash 烧了 .elf**（ELF 文件头被当成代码写入 flash） | `arm-none-eabi-objcopy -O binary xxx.elf xxx.bin` 后烧 .bin |
 | 8 | 烧录后程序不跑（其他原因） | BOOT0 仍为 1 | BOOT0 跳回 0，重新上电 |
-| 9 | 程序跑但 `HAL_Delay` 不工作，LED 常亮 | 切换 PLL 后未重配 SysTick | 加 `HAL_SYSTICK_Config(HAL_RCC_GetHCLKFreq()/1000)` + `SysTick_Handler` |
-| 10 | HAL 版 LED 常灭，寄存器版却正常 | HSE 外部晶振不起振 | 改用 HSI 时钟（见时钟配置表） |
+| 9 | 程序跑但 `HAL_Delay` 不工作 | 切换 PLL 后未重配 SysTick | 加 `HAL_SYSTICK_Config(HAL_RCC_GetHCLKFreq()/1000)` + `SysTick_Handler` |
 
 ### 4 针 ST-Link 无 NRST 时的救砖方法（经验参考）
 
@@ -651,13 +595,16 @@ st-flash write build/my-project.bin 0x08000000
 
 ---
 
-## 🔥 已验证完整流程（路径 B，纯 CLI，仅供参考）
+## 🔥 参考经验（非 SOP）
 
-> ⚠️ **此流程是特定硬件的成功记录，不是通用 SOP。** 验证硬件：Windows MSYS2 + 克隆版 ST-Link V2 + CS32 芯片 + Blue Pill (F103C8T6, 4针无NRST, 8MHz HSE晶振, PC13 LED Active Low)。
-> 
-> **验证结果：** CMSIS 寄存器模式 ✅ / HAL 模式 (HSE 72MHz) ✅ / `HAL_Delay(500)` = 1Hz ✅
->
-> **如果你的硬件不同（6 针含 NRST、原装 ST-Link、不同 LED 引脚等），AI 会根据你的实际配置生成定制流程。**
+> ⚠️ **以下全部内容来自特定硬件的实测记录。** 仅供参考。AI 不能将其作为默认操作流程，应根据用户的实际硬件情况按需参考。
+
+### 已验证完整流程（路径 B，纯 CLI）
+
+验证硬件：Windows MSYS2 + 克隆版 ST-Link V2 + CS32 芯片 + Blue Pill (F103C8T6, 4针无NRST, 8MHz HSE晶振)。
+验证结果：CMSIS 寄存器模式 ✅ / HAL 模式 (HSE 72MHz) ✅
+
+
 
 ```bash
 # ===== 一次性环境准备（整个电脑做一次） =====
@@ -690,10 +637,10 @@ arm-none-eabi-objcopy -O binary build/my-project.elf build/my-project.bin
 st-flash write build/my-project.bin 0x08000000
 
 # ===== 运行 =====
-# BOOT0=0 → 拔 USB → 再插上 → LED 闪烁！
+# BOOT0=0 → 重新上电
 ```
 
-**硬件接线：** ST-Link(SWDIO→SWIO)+(SWCLK→SWCLK)+(GND→GND)+(3V3→3V3)，共 4 线。
+**硬件接线：** ST-Link(SWDIO→SWIO)+(SWCLK→SWCLK)+(GND→GND)+(3V3→3V3)，共 4 线。如果 ST-Link 有 NRST 引脚的 6 针版，则 `st-flash --reset` 可直接复位运行。
 
 ## 参考资源
 
