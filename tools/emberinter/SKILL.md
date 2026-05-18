@@ -1,0 +1,181 @@
+---
+name: "emberinter"
+description: "Use EmberInterDebugTool CLI for serial monitoring, device communication, firmware verification, and embedded debugging. Invoke when user needs serial interaction, log analysis, or AT command testing."
+---
+
+# EmberInterDebugTool (尘智串口调试工具)
+
+嵌入式串口监控调试工具。GUI 负责串口连接管理，CLI 通过 IPC 与 GUI 联动。CLI 可随时启停，不影响串口数据采集。
+
+## 前置条件
+
+**CLI 所有操作都需要 GUI 已在运行**。如果 CLI 报 `GUI 服务未运行`，必须先启动 GUI。
+
+### 安装后默认路径
+
+安装包为 `emberInter-Setup-x.y.z.exe`，默认安装到 `Program Files (x86)\emberInter 尘智串口调试工具`，可能位于以下盘符：
+
+| 盘符 | 路径 |
+|------|------|
+| C: | `C:\Program Files (x86)\emberInter 尘智串口调试工具` |
+| D: | `D:\Program Files (x86)\emberInter 尘智串口调试工具` |
+| E: | `E:\Program Files (x86)\emberInter 尘智串口调试工具` |
+| F: | `F:\Program Files (x86)\emberInter 尘智串口调试工具` |
+
+安装目录下的可执行文件：
+
+| 文件 | 用途 |
+|------|------|
+| `serial-monitor.exe` | GUI 图形界面程序 |
+| `serial-monitor-cli.exe` | CLI 命令行工具 |
+| `emberInter.bat` | GUI 启动脚本 |
+| `emberInter-cli.bat` | CLI 启动脚本 |
+
+### 未安装时 (源码构建)
+
+CLI 可执行文件位于：`build/bin/serial-monitor-cli.exe`
+
+## 命令参考
+
+### 单次命令模式（--option，执行后退出）
+
+| 命令 | 说明 |
+|------|------|
+| `-p PORT` / `--port PORT` | 指定串口，实时监听日志 |
+| `-b RATE` / `--baudrate RATE` | 波特率 (默认 115200) |
+| `--list` | 列出可用串口设备 |
+| `--connect PORT` | 连接串口，可配合 `--baudrate` |
+| `--send DATA` | 发送文本数据 (自动追加 CRLF)，完成后退出 |
+| `--send-file FILE` | 发送二进制文件到串口 (Base64编码)，常用于固件升级 (OTA/bin 烧录)，完成后退出 |
+| `--get-logs N` | 获取最近 N 条日志 |
+| `--get-status` | 查看连接状态 (端口/连接/缓冲/RX/TX) |
+| `--cli` | 交互模式，需配合 `-p PORT` |
+| `-f KW` / `--filter KW` | 过滤关键词 |
+| `-o FILE` / `--output FILE` | 保存日志到文件 |
+| `--hex` | HEX 显示模式 |
+| `--json` | JSON 输出 (机器可读) |
+| `--no-timestamp` | 不显示时间戳 |
+| `--clear` | 启动时清空日志 |
+| `--ipc NAME` | IPC 服务名 (默认 serial_monitor_ipc) |
+| `-h / --help` | 帮助 |
+| `-v / --version` | 版本 |
+
+### 交互模式命令（--cli 进入）
+
+| 命令 | 别名 | 说明 |
+|------|------|------|
+| `help` | `h`, `?` | 显示帮助 |
+| `quit` | `q`, `exit` | 退出 CLI (GUI 继续运行) |
+| `clear` | `c` | 清空日志 |
+| `status` | `s` | 显示连接状态 |
+| `list` | `ls` | 列出可用串口 |
+| `connect <port> [baud]` | | 连接串口 |
+| `disconnect` | `disc` | 断开串口 |
+| `send <data>` | | 发送文本数据 (自动追加 CRLF) |
+| `sendhex <hex>` | | 发送 HEX 数据 |
+| `sendfile <file>` | | 发送二进制文件 (Base64) |
+| `filter <keyword>` | | 设置过滤 (空 = 取消) |
+| `hex` | | 切换 HEX 显示 |
+| `text` | | 切换文本显示 |
+| `timestamp` | `ts` | 切换时间戳 |
+| `export <file>` | | 导出日志为 JSON |
+
+> 未识别的命令会作为文本数据直接发送到串口。
+
+## 输出格式
+
+**默认 (人类可读)**：`[HH:MM:SS.mmm] [LEVEL] message`（带 ANSI 颜色）
+
+**HEX 模式**：标准 hexdump 格式（地址 | hex 字节 | ASCII）
+
+**JSON 模式**：每行一个 JSON 对象，`{"type":"log","port":"COM5","ts":"...","level":"INFO","text":"..."}`
+
+## 退出码
+
+| 码 | 含义 |
+|----|------|
+| 0 | 正常 |
+| 1 | 参数错误 |
+| 2 | GUI 服务未运行 |
+| 3 | 文件操作失败 |
+
+## 典型工作流
+
+### 1. 固件烧录后验证
+
+```bash
+# Step 1: 确认 GUI 运行且串口可用
+serial-monitor-cli --list
+
+# Step 2: 连接串口 + 清空旧日志
+serial-monitor-cli --connect COM3 --baudrate 115200 --clear
+
+# Step 3: 发送重启/AT 命令
+serial-monitor-cli --send "AT+GMR" -p COM3
+
+# Step 4: 等待几秒后获取日志用于分析
+sleep 3
+serial-monitor-cli --get-logs 50 --json > output.json
+```
+
+### 2. 串口设备交互
+
+```bash
+# 进入交互模式
+serial-monitor-cli -p COM3 --cli
+
+# 在交互模式中:
+> send AT+GMR      # 发送 AT 命令
+> sendhex FF AB 03 # 发送 HEX 数据
+> sendfile firmware.bin  # 发送二进制文件
+> status           # 查看连接状态
+> filter ERROR     # 只看错误日志
+> export debug.json # 导出日志
+> quit             # 退出
+```
+
+### 3. 持续监控并过滤
+
+```bash
+# 只显示含 ERROR 的日志，同时保存到文件
+serial-monitor-cli -p COM3 -f ERROR -o error.log
+
+# Ctrl+C 停止
+```
+
+### 4. 检查设备状态（脚本用）
+
+```bash
+# JSON 输出，方便脚本解析
+serial-monitor-cli --get-status --json
+# → {"port":"COM3","connected":true,"rx_bytes":1234,"tx_bytes":256,...}
+```
+
+### 5. 多串口监控
+
+```bash
+# 终端 1
+serial-monitor-cli -p COM3 --cli
+
+# 终端 2
+serial-monitor-cli -p COM5 --cli
+```
+
+## 日志级别与颜色
+
+| 级别 | 颜色 | 典型场景 |
+|------|------|----------|
+| TX (发送) | 绿色 | 用户/脚本发出的数据 |
+| INFO (接收) | 绿色 | 正常设备日志 |
+| WARN | 黄色 | 警告信息 |
+| ERROR | 红色 | 错误/异常 |
+| DEBUG | 青色 | 调试信息 |
+| TRACE | 灰色 | 详细跟踪 |
+
+## 注意事项
+
+- CLI 不直接操作串口，所有串口操作委托给 GUI
+- CLI 断连不影响串口数据持续采集
+- 多个 CLI 可同时连接到同一个 GUI
+- `--cli` 交互模式必须配合 `-p PORT` 使用
+- `--send` / `--send-file` 也需要 `-p PORT` 指定目标串口

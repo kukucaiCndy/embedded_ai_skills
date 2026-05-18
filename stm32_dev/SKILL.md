@@ -13,19 +13,59 @@ description: "STM32 embedded development guide - cross-platform (Windows/macOS/L
 ## 一、执行流程总览
 
 ```
-环境检测 → 交互配置 → CMakeLists.txt → 编译验证 → 应用代码 → 烧录
+Shell检测 → 工具链安装 → 路径判断 → 交互配置 → CMakeLists.txt → 编译验证 → 应用代码 → 烧录
 ```
 
 ---
 
 ## 二、第零步：环境检测（全局一次）
 
-### 工具链安装
+### Shell 检测（Windows 必须）
 
-```bash
-# 检测当前平台
-uname -s    # Linux / Darwin (macOS) / MINGW64_NT (Windows MSYS2)
+> **AI 必须先检测当前 Shell 环境。** Windows 下 stm32-cmake 工具链依赖 MSYS2 环境，PowerShell / CMD 无法正常使用 `pacman` 安装工具链。
+
 ```
+AI 操作流程:
+1. 执行 uname -s 检测当前环境
+2. 根据结果判断:
+```
+
+| `uname -s` 输出 | 平台/Shell | AI 动作 |
+|-----------------|-----------|---------|
+| `MSYS_NT-*` | Windows + MSYS2 ✅ | 继续工具链检测 |
+| `MINGW64_NT-*` | Windows + MSYS2 ✅ | 继续工具链检测 |
+| `Linux` | Linux ✅ | 继续工具链检测 |
+| `Darwin` | macOS ✅ | 继续工具链检测 |
+| **其他** (含 PowerShell 执行失败) | **Windows 非 MSYS2** ❌ | **引导安装 MSYS2** |
+
+#### Windows 用户不在 MSYS2 环境时的处理
+
+> **AI 检测到非 MSYS2 环境时，输出以下引导信息：**
+
+```
+AI 向用户输出:
+
+"检测到你当前不在 MSYS2 环境中。STM32 开发工具链需要通过 MSYS2 安装和管理。
+
+请按以下步骤安装 MSYS2:
+
+1. 下载安装包: https://www.msys2.org/
+   运行安装程序，默认安装到 C:\msys64
+
+2. 安装完成后，从开始菜单启动 「MSYS2 UCRT64」
+
+3. 在 UCRT64 终端中验证:
+   uname -s          # 应输出 MINGW64_NT-* 或 MSYS_NT-*
+   pacman --version  # 确认包管理器可用
+
+4. 然后在 UCRT64 终端中重新执行本 Skill
+
+安装完成后告诉我，我会继续环境检测。"
+```
+
+> **⚠️ 重要：** 后续所有 `pacman`、`arm-none-eabi-gcc`、`cmake`、`ninja`、`st-flash` 命令都必须在 MSYS2 UCRT64 终端中执行。不要尝试在 PowerShell 中安装这些工具。
+
+### 工具链安装
 
 | 平台 | 推荐 Shell | 安装命令（一次） |
 |------|-----------|---------|
@@ -71,6 +111,24 @@ git clone --depth=1 https://github.com/ObKo/stm32-cmake.git ~/stm32-tools/stm32-
 ## 三、第一步：交互式项目配置
 
 > **AI 逐条询问，应追问时追问。核心理念：理解用户需求后才能正确生成 CMakeLists.txt。**
+
+### 0. 固件来源确认（编译前置条件）
+
+> **⚠️ 必问！** 网络不通时 `stm32_fetch_cube()` 无法从 GitHub 下载 Cube 固件包，必须提前确认。
+
+```
+AI: "你的开发环境能否正常访问 GitHub？（编译时需要下载 STM32Cube 固件包）"
+
+┌──────────────────────────────────────────────────────────────┐
+│ [1] 网络正常（能访问 GitHub）                              │
+│     → stm32_fetch_cube() 自动从 GitHub 下载 CMSIS+HAL       │
+│     首次编译约 30-60 秒                                     │
+│                                                             │
+│ [2] 网络不通                                               │
+│     → stm32-cmake 需要通过 GitHub 拉取固件源码              │
+│     请确保网络畅通后再继续，或自行解决网络问题              │
+└──────────────────────────────────────────────────────────────┘
+```
 
 ### 1. 芯片型号
 
@@ -234,7 +292,7 @@ set(CMAKE_TOOLCHAIN_FILE "$ENV{HOME}/stm32-tools/stm32-cmake/cmake/stm32_gcc.cma
 
 project(my-project C C ASM)
 
-stm32_fetch_cube(STM32L4)
+stm32_fetch_cube(L4)
 
 find_package(CMSIS COMPONENTS STM32L431VC REQUIRED)
 find_package(HAL COMPONENTS STM32L4 REQUIRED)
@@ -243,9 +301,9 @@ file(GLOB_RECURSE PROJECT_SOURCES code/src/*.c)
 
 add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
 
-target_include_directories(${PROJECT_NAME}.elf PRIVATE code/include)
+target_include_directories(${PROJECT_NAME} PRIVATE code/include)
 
-target_link_libraries(${PROJECT_NAME}.elf PRIVATE
+target_link_libraries(${PROJECT_NAME} PRIVATE
     CMSIS::STM32::L431VC
     HAL::STM32::L4
     STM32::NoSys
@@ -270,7 +328,7 @@ set(CMAKE_TOOLCHAIN_FILE "$ENV{HOME}/stm32-tools/stm32-cmake/cmake/stm32_gcc.cma
 # ⚠️ 必须包含 C CXX 两者！
 project(my-project C CXX ASM)
 
-stm32_fetch_cube(STM32L4)
+stm32_fetch_cube(L4)
 
 find_package(CMSIS COMPONENTS STM32L431VC REQUIRED)
 find_package(HAL COMPONENTS STM32L4 REQUIRED)
@@ -279,9 +337,9 @@ file(GLOB_RECURSE PROJECT_SOURCES code/src/*.cpp)
 
 add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
 
-target_include_directories(${PROJECT_NAME}.elf PRIVATE code/include)
+target_include_directories(${PROJECT_NAME} PRIVATE code/include)
 
-target_link_libraries(${PROJECT_NAME}.elf PRIVATE
+target_link_libraries(${PROJECT_NAME} PRIVATE
     CMSIS::STM32::L431VC
     HAL::STM32::L4
     STM32::NoSys
@@ -297,7 +355,7 @@ target_link_libraries(${PROJECT_NAME}.elf PRIVATE
 )
 
 # ⚠️ C++ 选项仅对 .cpp 生效
-target_compile_options(${PROJECT_NAME}.elf PRIVATE
+target_compile_options(${PROJECT_NAME} PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-std=c++17>
     $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
     $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>
@@ -320,7 +378,7 @@ set(CMAKE_TOOLCHAIN_FILE "$ENV{HOME}/stm32-tools/stm32-cmake/cmake/stm32_gcc.cma
 
 project(my-project C ASM)
 
-stm32_fetch_cube(STM32F1)
+stm32_fetch_cube(F1)
 
 find_package(CMSIS COMPONENTS STM32F103C8 REQUIRED)
 
@@ -328,7 +386,7 @@ file(GLOB_RECURSE PROJECT_SOURCES code/src/*.c)
 
 add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
 
-target_link_libraries(${PROJECT_NAME}.elf PRIVATE
+target_link_libraries(${PROJECT_NAME} PRIVATE
     CMSIS::STM32::F103C8
     STM32::NoSys
 )
@@ -342,7 +400,7 @@ set(CMAKE_TOOLCHAIN_FILE "$ENV{HOME}/stm32-tools/stm32-cmake/cmake/stm32_gcc.cma
 
 project(my-project C CXX ASM)
 
-stm32_fetch_cube(STM32F1)
+stm32_fetch_cube(F1)
 
 find_package(CMSIS COMPONENTS STM32F103C8 REQUIRED)
 
@@ -350,12 +408,12 @@ file(GLOB_RECURSE PROJECT_SOURCES code/src/*.cpp)
 
 add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
 
-target_link_libraries(${PROJECT_NAME}.elf PRIVATE
+target_link_libraries(${PROJECT_NAME} PRIVATE
     CMSIS::STM32::F103C8
     STM32::NoSys
 )
 
-target_compile_options(${PROJECT_NAME}.elf PRIVATE
+target_compile_options(${PROJECT_NAME} PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-std=c++17>
     $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
     $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>
@@ -563,7 +621,7 @@ GND    ────────────→  GND
 | 1 | `UART_HandleTypeDef undeclared` / `TIM_HandleTypeDef undeclared` | hal_conf.h 中对应模块的 `#define HAL_xxx_MODULE_ENABLED` 被注释 | 去注释对应模块 |
 | 2 | `undefined reference to HAL_xxx` | CMakeLists.txt 中未链接对应 HAL module | `target_link_libraries` 中添加 `HAL::STM32::{F}::xxx` |
 | 3 | `cannot find -lSTM32::NoSys` | 未链接 `STM32::NoSys` | `target_link_libraries` 中加 `STM32::NoSys` |
-| 4 | `fatal error: stm32l4xx_hal.h: No such file` | include 路径不对 | CMakeLists.txt 中 `target_include_directories(${PROJECT_NAME}.elf PRIVATE code/include)` |
+| 4 | `fatal error: stm32l4xx_hal.h: No such file` | include 路径不对 | CMakeLists.txt 中 `target_include_directories(${PROJECT_NAME} PRIVATE code/include)` |
 | 5 | `cc1.exe: warning: '-std=c++17' is valid for C++ but not for C` | C++ 选项被传给 C 编译器 | 用 `$<$<COMPILE_LANGUAGE:CXX>:-std=c++17>` generator expression |
 | 6 | `undefined reference to HAL_xxx`（C++ 项目） | project 只写了 `CXX ASM`，HAL C 源文件未编译 | 改为 `project(... C CXX ASM)` |
 | 7 | `dangerous relocation: unsupported relocation`（C++ 项目） | HAL .c 文件未链接进目标 | 确保 `project()` 包含 C 语言 |
