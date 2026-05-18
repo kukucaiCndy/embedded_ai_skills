@@ -24,17 +24,14 @@ description: "STM32 debugging via serial log and ST-Link. Invoke when user encou
 
 > **AI 首次执行本 Skill 时，必须先检查 stm32-dev skill 是否已存在。**
 
-```bash
-# 检测 stm32-dev 是否已安装
-ls .trae/skills/stm32-dev/SKILL.md 2>/dev/null && echo "INSTALLED" || echo "NOT_INSTALLED"
 ```
+AI 自行判断 stm32-dev skill 是否已安装：
+1. 在 skill 目录中搜索 stm32-dev 相关文件
+2. 如未找到，则从仓库获取
 
-**如果未安装：**
-
-```
-AI 执行:
+获取方式:
 git clone https://github.com/kukucaiCndy/embedded_ai_skills.git /tmp/embedded_ai_skills
-cp -r /tmp/embedded_ai_skills/stm32_dev/* .trae/skills/stm32-dev/
+cp -r /tmp/embedded_ai_skills/stm32_dev/* <当前环境的 skill 目录>/stm32-dev/
 ```
 
 > stm32-dev skill 提供完整的工具链安装、工程编译、烧录流程。本 Skill 的编译/烧录步骤均复用 stm32-dev 的能力。
@@ -61,59 +58,47 @@ openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
 
 > 如能正常输出 `r0`~`r15`、`pc`、`msp`、`psp`、`xPSR` 等寄存器，说明 ST-Link 调试通道正常。
 
-### 2.3 安装串口调试工具
+### 2.3 安装串口调试工具（EmberInterDebugTool）
 
-**下载地址：** `https://github.com/kukucaiCndy/serial-monitor/releases`
+> **本工具为安装包形式，需安装后才能使用。** 工具配套 **GUI** 和 **CLI** 两种模式，**使用前需先启动 GUI**。
 
-| 平台 | 安装方式 |
-|------|---------|
-| **Windows** | 从 Releases 页面下载最新 `.exe`，直接运行即可，无需安装 |
-| **macOS** | 需自行下载源码编译：`git clone` → 按 README 编译 |
-| **Linux** | 需自行下载源码编译：`git clone` → 按 README 编译 |
+**下载地址：** `https://github.com/kukucaiCndy/emberinter/releases`
 
-**Windows 自动安装：**
+| 步骤 | 操作 |
+|------|------|
+| 1. 下载安装包 | 从 Releases 页面下载最新安装包（`.exe` / `.dmg` / `.deb`） |
+| 2. 运行安装程序 | 按安装向导完成安装，记下安装目录 |
+| 3. 启动 GUI | 安装完成后先启动 GUI，确认工具正常运行 |
+| 4. CLI 可用 | GUI 启动后，CLI 命令行接口才可用于脚本/自动化场景 |
 
-```bash
-# AI 自动获取最新 release 下载地址并下载
-LATEST_URL=$(curl -s https://api.github.com/repos/kukucaiCndy/serial-monitor/releases/latest | grep "browser_download_url.*\.exe" | cut -d '"' -f 4)
-curl -L -o ~/stm32-tools/serial-monitor.exe "$LATEST_URL"
-```
+### 2.4 加载工具 Skill 并学习 CLI 命令
 
-**macOS / Linux 源码编译：**
+> **AI 在使用串口工具前，必须先加载工具对应的 skill，掌握其命令行参数。**
 
-```bash
-git clone https://github.com/kukucaiCndy/serial-monitor.git ~/stm32-tools/serial-monitor-src
-# 进入目录后按项目 README 中的编译说明操作
-```
-
-### 2.4 学习串口工具 CLI 命令
-
-> **AI 在使用串口工具前，必须先掌握其命令行参数。**
+**Skill 获取来源（按优先级）：**
 
 ```
-AI 学习流程:
-1. 下载工具后，先执行 --help 获取完整参数列表
+1. 本地优先：从工具安装目录获取
+   常见路径:
+     Windows:  C/D/E/F:\Program Files (x86)\EmberInterDebugTool\skill\
+     或自定义安装路径下的 skill\ 子目录
 
-   Windows:
-   ~/stm32-tools/serial-monitor.exe --help
-
-   macOS / Linux:
-   cd ~/stm32-tools/serial-monitor-src
-   python serial_monitor.py --help
-
-2. 根据 --help 输出，AI 记录以下关键参数（如存在）:
-   --port       串口设备路径 (Windows: COM3, Linux: /dev/ttyUSB0)
-   --baudrate   波特率 (常用: 115200, 921600)
-   --log-file   日志输出文件路径
-   --timeout    读取超时时间
-   --filter     日志过滤规则
-
-3. 如果 --help 输出不够详细或参数有差异，AI 阅读项目 README 或源码顶部的 argparse 定义补充
-
-4. AI 根据实际支持的参数组合出正确的启动命令
+2. 线上备用：从 GitHub 仓库获取
+   https://github.com/kukucaiCndy/embedded_ai_skills/tree/master/tools/emberinter
 ```
 
-> **⚠️ 不要假设参数名。** 必须通过 `--help` 或源码确认后再使用。
+**AI 加载流程:**
+
+```
+1. 先检查工具安装目录下的 skill\ 子目录是否存在
+2. 如果存在，加载本地 skill 文件
+3. 如果不存在，从 GitHub 仓库获取:
+   git clone https://github.com/kukucaiCndy/embedded_ai_skills.git /tmp/embedded_ai_skills
+   # skill 内容位于 /tmp/embedded_ai_skills/tools/emberinter/
+4. 加载 skill 后，按照 skill 中的说明学习 CLI 参数
+```
+
+> **⚠️ 不要假设参数名。** 必须通过 skill 中的说明确认后再使用。
 
 ---
 
@@ -180,23 +165,18 @@ AI 根据问题类型选择调试方案:
 
 ### 6.1 配置串口工具
 
+> **使用前确保已按 2.3 节安装 EmberInterDebugTool 并启动 GUI。**
+
 ```
 AI 询问用户:
 "请确认串口信息：COM 口号？（如 COM3）波特率？（如 115200）"
 ```
 
-**配置并启动监听：**
+**启动监听：**
 
-```bash
-# Windows：直接运行下载的 exe
-~/stm32-tools/serial-monitor.exe --port COM3 --baudrate 115200 --log-file /tmp/serial_debug.log &
+> AI 按照 2.4 节加载的 skill 中的说明，使用 CLI 启动串口监听并保存日志。
 
-# macOS / Linux：运行编译后的脚本
-cd ~/stm32-tools/serial-monitor-src
-python serial_monitor.py --port /dev/ttyUSB0 --baudrate 115200 --log-file /tmp/serial_debug.log &
-```
-
-> **⚠️ 实际参数名以 `--help` 输出为准。** 上述命令为示例格式，AI 需先执行 2.4 节的学习流程确认实际参数后再组装命令。
+> **⚠️ 实际参数名以 skill 中的说明为准。** 上述流程为示例，AI 需先执行 2.4 节的加载流程后再组装命令。
 
 ### 6.2 添加诊断日志
 
@@ -445,10 +425,7 @@ openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
 
 ### 串口监听工具
 
-```bash
-# 启动监听（参数以 --help 输出为准）
-~/stm32-tools/serial-monitor.exe --port COM3 --baudrate 115200 --log-file /tmp/serial_debug.log
-```
+> 使用 EmberInterDebugTool（按 2.3/2.4 节安装并加载 skill），根据 skill 中的说明使用 CLI 启动监听。
 
 ### 反汇编/符号表
 
