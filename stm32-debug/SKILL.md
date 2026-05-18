@@ -1,4 +1,5 @@
----
+***
+
 name: "stm32-debug"
 description: "STM32 debugging via serial log and ST-Link. Invoke when user encounters bugs, crashes, or unexpected behavior on STM32 and needs root cause analysis."
 ---
@@ -62,7 +63,7 @@ openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
 
 > **本工具为安装包形式，需安装后才能使用。** 工具配套 **GUI** 和 **CLI** 两种模式，**使用前需先启动 GUI**。
 
-**下载地址：** `https://github.com/kukucaiCndy/emberinter/releases`
+**下载地址：** `https://github.com/kukucaiCndy/EmberinterTool/releases`
 
 | 步骤 | 操作 |
 |------|------|
