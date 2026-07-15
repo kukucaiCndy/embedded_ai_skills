@@ -1,4 +1,4 @@
-***
+---
 
 name: "stm32-debug"
 description: "STM32 debugging via serial log and ST-Link. Invoke when user encounters bugs, crashes, or unexpected behavior on STM32 and needs root cause analysis."
@@ -23,19 +23,19 @@ description: "STM32 debugging via serial log and ST-Link. Invoke when user encou
 
 ### 2.1 安装 stm32-dev Skill
 
-> **AI 首次执行本 Skill 时，必须先检查 stm32-dev skill 是否已存在。**
+> **AI 首次执行本 Skill 时，必须先检查 stm32-dev-setup skill 是否已存在。**
 
 ```
-AI 自行判断 stm32-dev skill 是否已安装：
-1. 在 skill 目录中搜索 stm32-dev 相关文件
+AI 自行判断 stm32-dev-setup skill 是否已安装：
+1. 在 skill 目录中搜索 stm32-dev-setup 相关文件
 2. 如未找到，则从仓库获取
 
 获取方式:
 git clone https://github.com/kukucaiCndy/embedded_ai_skills.git /tmp/embedded_ai_skills
-cp -r /tmp/embedded_ai_skills/stm32_dev/* <当前环境的 skill 目录>/stm32-dev/
+cp -r /tmp/embedded_ai_skills/stm32/stm32-dev-setup/* <当前环境的 skill 目录>/stm32-dev/
 ```
 
-> stm32-dev skill 提供完整的工具链安装、工程编译、烧录流程。本 Skill 的编译/烧录步骤均复用 stm32-dev 的能力。
+> stm32-dev-setup skill 提供完整的工具链安装、工程编译、烧录流程。本 Skill 的编译/烧录步骤均复用 stm32-dev 的能力。
 
 ### 2.2 检查 ST-Link 连接
 
