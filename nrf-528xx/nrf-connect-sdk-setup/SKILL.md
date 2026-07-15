@@ -26,10 +26,10 @@ description: "SOP for setting up nRF Connect SDK (Zephyr-based) development envi
 ## Pre-flight: 环境检测（⚠️ 必须最先执行）
 
 > **在安装任何组件之前，必须先运行检测命令，确认当前系统已有组件状态。仅对缺失项执行后续安装步骤。**
+>
+> **⚠️ 执行规则**：所有检测命令必须并行执行（单条消息多个 RunCommand 调用），不要串行等待。
 
 ### 检测项目表
-
-逐项运行以下检测命令，记录结果决定是否跳过对应 Step：
 
 | # | 检测项 | 检测命令 | 匹配条件 |
 |---|--------|---------|---------|
@@ -39,36 +39,88 @@ description: "SOP for setting up nRF Connect SDK (Zephyr-based) development envi
 | P4 | gperf | `which gperf && gperf --version \| head -1` | 可执行 + 显示版本 |
 | P5 | python3 | `python3 --version` | 版本 >= 3.8 |
 | P6 | arm-none-eabi-gcc | `which arm-none-eabi-gcc && arm-none-eabi-gcc --version \| head -1` | 可执行 + 显示版本 |
-| P7 | JLinkExe | 见下方「J-Link 专用检测逻辑」 | 任意方式找到可执行文件 |
-| P8 | west | `west --version` 或 `python3 -c "import west; print(west.__version__)"` | 可正常返回 |
-| P9 | NCS workspace | `test -d "$NCS_DIR/.west"` | 目录存在 |
-| P10 | pyelftools | `python3 -c "import elftools"` | 不报错 |
-| P11 | intelhex | `python3 -c "import intelhex"` | 不报错 |
-| P12 | .zshrc/.bashrc | `grep "nRF Connect SDK" ~/.zshrc` (或 .bashrc) | 包含 NCS 配置行 |
+| P7 | JLinkExe | 见下方「J-Link 专用检测逻辑」 | 找到可执行文件（非断裂符号链接） |
+| P8 | west | `west --version 2>/dev/null \|\| python3 -c "import west; print(west.__version__)" 2>/dev/null \|\| echo NOT_FOUND` | 可正常返回 |
+| P9 | NCS workspace | `test -d "$HOME/ncs/.west" && echo "FOUND: $HOME/ncs" \|\| echo "NOT_FOUND"` | 目录存在 |
+| P10 | Zephyr Python 依赖完整性 | 见下方「Python 依赖检测逻辑」 | 所有必需包已安装 |
+| P11 | .zshrc/.bashrc | `grep "nRF Connect SDK" ~/.zshrc 2>/dev/null \|\| grep "nRF Connect SDK" ~/.bashrc 2>/dev/null \|\| echo NOT_FOUND` | 包含 NCS 配置行 |
+| P12 | west 在 PATH 中 | `which west 2>/dev/null \|\| echo NOT_FOUND` | 可直接执行（非需完整路径） |
 
 ### J-Link 专用检测逻辑（P7）
 
-按优先级依次查找：
+> **⚠️ 注意以下两个陷阱：**
+> 1. **`find` 返回值陷阱**：`find` 即使没有匹配结果也返回 exit code 0。切勿将 `find` 放在 `||` 短路链中使用，否则第一个 `find` 执行后链即短路，后续检测步骤会被跳过。
+> 2. **断裂符号链接陷阱**：JLink 安装到自定义前缀时，`usr/local/bin/JLinkExe` 等符号链接可能指向不存在的绝对路径（如 `/Applications/SEGGER/...`），导致 `-x` 检测失败。因此 **不能使用 `head -1` 只取第一个 find 结果**，必须收集所有结果逐个检查。
+
+使用以下一次性循环检测脚本（收集所有候选路径，找到第一个可执行文件即停止）：
 
 ```bash
-# 1. PATH 中直接可执行
-which JLinkExe 2>/dev/null
-
-# 2. macOS 标准安装路径
-ls /Applications/SEGGER/JLink/JLinkExe 2>/dev/null
-# 或用通配符匹配版本号子目录
-find /Applications/SEGGER -name "JLinkExe" -maxdepth 3 2>/dev/null
-
-# 3. Homebrew 安装路径
-ls /opt/homebrew/bin/JLinkExe 2>/dev/null
-ls /usr/local/bin/JLinkExe 2>/dev/null
-
-# 4. 用户自定义工具目录（兜底）
-find "$HOME/tools" -name "JLinkExe" -maxdepth 5 2>/dev/null
-find "$HOME/.local" -name "JLinkExe" -maxdepth 5 2>/dev/null
+JLINK_PATH=""
+# 收集所有候选路径（不用 head -1，保留全部 find 结果以跳过断裂符号链接）
+candidates="$(
+  which JLinkExe 2>/dev/null
+  echo "/Applications/SEGGER/JLink/JLinkExe"
+  find /Applications/SEGGER -name 'JLinkExe' -maxdepth 3 2>/dev/null
+  echo "/opt/homebrew/bin/JLinkExe"
+  echo "/usr/local/bin/JLinkExe"
+  find "$HOME/tools" -name 'JLinkExe' -maxdepth 5 2>/dev/null
+  find "$HOME/.local" -name 'JLinkExe' -maxdepth 5 2>/dev/null
+)"
+# 逐行检查，找到第一个可执行文件（用 <<< here-string 避免管道子 shell 变量丢失）
+while IFS= read -r p; do
+  if [ -n "$p" ] && [ -x "$p" ]; then
+    JLINK_PATH="$p"
+    break
+  fi
+done <<< "$candidates"
+echo "JLinkExe: ${JLINK_PATH:-NOT_FOUND}"
 ```
 
-> 只要上述任一命令返回有效路径，即标记 J-Link 已安装。记录实际路径供后续使用。
+> 只要输出非 `NOT_FOUND`，即标记 J-Link 已安装。**记录 JLINK_PATH 实际路径**，后续烧录步骤需要用到（可能不在 PATH 中）。
+
+### Python 依赖检测逻辑（P10）
+
+> **⚠️ 不能只检查 pyelftools/intelhex**。Zephyr 的 `west flash` 需要 `requirements-base.txt` 中的全部包（psutil、pylink-square、pyserial 等），缺失任何一个都会导致 `FATAL ERROR: one or more Python dependencies were missing`。
+
+```bash
+# 检查 requirements-base.txt 中的所有必需包（模块名与包名不同，用 import 名）
+MISSING_PKGS=""
+# 格式: "import名:显示名"，用正确的 import 模块名
+for entry in "elftools:pyelftools" "intelhex:intelhex" "yaml:PyYAML" "pykwalify:pykwalify" "canopen:canopen" "packaging:packaging" "progress:progress" "patoolib:patool" "psutil:psutil" "pylink:pylink-square" "serial:pyserial" "requests:requests" "semver:semver" "anytree:anytree" "west:west"; do
+  mod="${entry%%:*}"
+  python3 -c "import $mod" 2>/dev/null || MISSING_PKGS="$MISSING_PKGS $mod"
+done
+if [ -z "$MISSING_PKGS" ]; then
+  echo "Python deps: ALL OK"
+else
+  echo "Python deps MISSING:$MISSING_PKGS"
+fi
+```
+
+> **注意**：检测脚本用的是 Python `import` 名（如 `pylink`、`serial`、`yaml`），不是 pip 包名（如 `pylink-square`、`pyserial`、`PyYAML`）。缺失时用 pip 包名安装。
+
+### west 路径检测逻辑（P8 + P12）
+
+> **⚠️ macOS 上 pip3 --user 安装的 west 位于 `~/Library/Python/3.x/bin/`，可能不在 PATH 中**。即使 `python3 -c "import west"` 成功，`which west` 仍可能失败。
+
+- **P8 通过但 P12 失败**：west 已安装但未在 PATH → 执行 Step 4 的 PATH 配置部分
+- **P8 失败**：west 未安装 → 执行 Step 4 完整安装
+
+查找 west 实际路径：
+```bash
+WEST_BIN=""
+for p in "$(which west 2>/dev/null)" \
+         "$HOME/Library/Python/3.9/bin/west" \
+         "$HOME/Library/Python/3.10/bin/west" \
+         "$HOME/Library/Python/3.11/bin/west" \
+         "$HOME/.local/bin/west"; do
+  if [ -n "$p" ] && [ -x "$p" ]; then
+    WEST_BIN="$p"
+    break
+  fi
+done
+echo "west: ${WEST_BIN:-NOT_FOUND}"
+```
 
 ### 检测结果报告
 
@@ -78,11 +130,14 @@ find "$HOME/.local" -name "JLinkExe" -maxdepth 5 2>/dev/null
 环境检测结果:
   ✅ cmake 4.x       ✅ ninja 1.x      ✅ dtc 1.x
   ✅ gperf           ✅ python3 3.x    ✅ arm-none-eabi-gcc
-  ✅ JLinkExe        ✅ west           ❌ NCS workspace (将安装)
-  ✅ pyelftools      ✅ intelhex       ✅ .zshrc
+  ✅ JLinkExe (/path/to/JLinkExe)  ✅ west 1.5.0  ❌ west 不在 PATH (将配置)
+  ✅ NCS workspace (/Users/xxx/ncs)
+  ❌ Python deps MISSING: psutil pylink-square (将安装)
+  ✅ .zshrc
 
 安装计划（仅缺失项）:
-  → Step 5: west init $HOME/ncs + west update (~15min)
+  → Step 4: 配置 west PATH
+  → Step 6: pip3 install 缺失的 Python 依赖
 ```
 
 ---
@@ -167,18 +222,41 @@ brew install --cask segger-jlink
 
 > 验证: `JLinkExe -NoGui 0 -CommandFile /dev/null -ExitOnError 0` 能显示 J-Link 信息
 
-## Step 4: 安装 west 工具
+## Step 4: 安装 west 工具并配置 PATH
 
-> **如果 Pre-flight P8 通过，跳过此步骤。**
+> **如果 P8 通过且 P12 通过，跳过此步骤。**
+> **如果 P8 通过但 P12 失败（west 不在 PATH），仅执行下方 PATH 配置。**
+> **如果 P8 失败，执行完整安装 + PATH 配置。**
+
+### 4.1 安装 west（如未安装）
 
 ```bash
 pip3 install --user west
-# 确保 pip3 user bin 目录在 PATH 中
-# macOS: PATH 已自动包含 ~/Library/Python/3.x/bin
-# Linux:  export PATH="$HOME/.local/bin:$PATH"
 ```
 
-> 验证: `west --version`
+### 4.2 配置 PATH（⚠️ 必须执行，即使 west 已安装）
+
+```bash
+# 查找 west 实际安装路径
+WEST_BIN_DIR=""
+for d in "$HOME/Library/Python/3.9/bin" \
+         "$HOME/Library/Python/3.10/bin" \
+         "$HOME/Library/Python/3.11/bin" \
+         "$HOME/.local/bin"; do
+  if [ -x "$d/west" ]; then
+    WEST_BIN_DIR="$d"
+    break
+  fi
+done
+echo "west bin dir: ${WEST_BIN_DIR:-NOT_FOUND}"
+
+# 将 west bin 目录加入 ~/.zshrc（如尚未存在）
+if [ -n "$WEST_BIN_DIR" ]; then
+  grep -q "$WEST_BIN_DIR" ~/.zshrc 2>/dev/null || echo "export PATH=\"$WEST_BIN_DIR:\$PATH\"" >> ~/.zshrc
+fi
+```
+
+> 验证: `export PATH="$WEST_BIN_DIR:$PATH" && west --version`
 
 ## Step 5: 初始化 nRF Connect SDK
 
@@ -193,22 +271,25 @@ west update
 > `west update` Clone 所有子仓库（约 4-5GB），需 15-30 分钟。  
 > 如中断：删除只有 `.git/` 无文件的空目录后重新 `west update`。
 
-## Step 6: 安装 Python 依赖
+## Step 6: 安装 Python 依赖（⚠️ 完整安装，非仅 pyelftools/intelhex）
 
-> **如果 Pre-flight P10+P11 全部通过，跳过此步骤。**
+> **如果 Pre-flight P10 通过（ALL OK），跳过此步骤。**
+> **如果 P10 报告缺失包，仅安装缺失包或完整重装。**
 
 ```bash
-pip3 install -r "$NCS_DIR/zephyr/scripts/requirements.txt"
-# 或至少安装关键包:
-pip3 install pyelftools intelhex
+# 方案 A：完整安装 requirements-base.txt（推荐，避免遗漏）
+pip3 install --user -r "$NCS_DIR/zephyr/scripts/requirements-base.txt"
+
+# 方案 B：仅安装缺失包（从 P10 检测结果获取包名）
+# pip3 install --user <missing_packages>
 ```
 
-> 验证: `python3 -c "import elftools; import intelhex; print('OK')"`
+> 验证: 重新运行 P10 检测脚本，确认输出 `Python deps: ALL OK`
 
 ## Step 7: 配置 shell 环境变量
 
-> **如果 Pre-flight P12 通过，跳过此步骤。**
-> **如果 NCS_DIR 路径与之前不同，需要更新。**
+> **如果 Pre-flight P11 通过，检查内容是否需要更新（如 NCS_DIR 变化）。**
+> **必须包含：ZEPHYR_TOOLCHAIN_VARIANT、GNUARMEMB_TOOLCHAIN_PATH、west PATH、zephyr-env.sh source。**
 
 ```bash
 # 加入 ~/.zshrc 或 ~/.bashrc
@@ -250,9 +331,10 @@ west build -b nrf52840dk_nrf52840 \
 
 - [x] `cmake --version` 正常
 - [x] `arm-none-eabi-gcc --version` 正常
-- [x] `JLinkExe` 可执行（`which JLinkExe` 或 find 能找到）
-- [x] `west --version` 正常
+- [x] `JLinkExe` 可执行（已记录路径，必要时已加入 PATH）
+- [x] `west --version` 正常 **且 `which west` 能直接找到**
 - [x] `$NCS_DIR/.west` 存在
+- [x] **P10 Python 依赖检测 ALL OK（含 psutil/pylink-square/pyserial 等）**
 - [x] `west build -b nrf52840dk_nrf52840 .../blinky` 成功
 
 ## 故障排除
@@ -261,8 +343,10 @@ west build -b nrf52840dk_nrf52840 \
 |------|----------|
 | `ModuleNotFoundError: No module named 'elftools'` | `pip3 install pyelftools` |
 | `ModuleNotFoundError: No module named 'intelhex'` | `pip3 install intelhex` |
+| `FATAL ERROR: one or more Python dependencies were missing` | `pip3 install --user -r $NCS_DIR/zephyr/scripts/requirements-base.txt` |
 | `HAS_CMSIS_CORE ... has direct dependencies 0` | CMSIS 模块仅 fetch 未 checkout。删除 `modules/hal/cmsis` 后重新 `west update` |
 | `west update` 后部分模块只有 `.git/` 无工作文件 | `find modules -name ".git" -maxdepth 3 \| while read g; do ... done` 删空目录，重跑 `west update` |
 | macOS `segger-jlink` cask checksum 错 | 从 SEGGER 官网下载 `.pkg`，或用 Nordic DMG 提取方案 |
-| `west` 命令找不到 | 确认 `pip3 show -f west` 输出的 bin 路径在 PATH 中 |
-| JLinkExe 在非标准路径 | 在 Pre-flight P7 中，find 会扫描 `~/tools/`、`~/.local/` 等目录兜底 |
+| `west` 命令找不到 | 确认 `pip3 show -f west` 输出的 bin 路径在 PATH 中（macOS: `~/Library/Python/3.x/bin`） |
+| JLinkExe 在非标准路径 | Pre-flight P7 循环检测脚本会扫描 `~/tools/`、`~/.local/` 等目录兜底 |
+| JLinkExe 是断裂符号链接 | P7 检测脚本已跳过 `-x` 失败的路径，继续查找下一个 |
